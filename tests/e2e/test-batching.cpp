@@ -33,10 +33,13 @@ static std::vector<token_t> collect(Engine::Handle & h, std::string & text, uint
 
 // Two greedy runs of the same request must agree token for token. The one tolerated exception is a *near tie*:
 // GPU backends pick different matmul/attention kernels depending on the batch shape (a 47-token prefill vs a
-// 15-token suffix on a cached prefix), and their rounding differs by ~1e-2 nats, so when the top-2 candidates
-// are within NEAR_TIE nats of each other in both runs and each run's choice is the other's runner-up, the flip
-// is numerics rather than a bug (everything after the flip legitimately differs). Anything else is a failure.
-static constexpr float NEAR_TIE = 0.1f;
+// 15-token suffix on a cached prefix; 1-token decodes vs 5-token speculative verification batches through
+// cuBLAS F16 accumulation), and their rounding differs measurably: |delta logprob| of the sampled token between
+// two such runs reaches 0.07 nats (0.14 with draft verification) on SmolLM2-135M F16 on an RTX 5090, while the
+// CPU backend stays below 0.01. So when the top-2 candidates are within NEAR_TIE nats of each other in both runs
+// and each run's choice is the other's runner-up, the flip is numerics rather than a bug (everything after the
+// flip legitimately differs). Anything else is a failure. The measured noise is printed at the end of the run.
+static constexpr float NEAR_TIE = 0.25f;
 
 // backend noise: |delta logprob| of the sampled token over positions where two runs agree
 static size_t g_cmp_n = 0; static double g_cmp_sum = 0.0, g_cmp_max = 0.0;
@@ -66,7 +69,9 @@ static bool same_output(const Tokenizer & tok, const char * what, const std::vec
         printf("\n");
     };
     const bool tie = i < ref.size() && i < got.size() && near_tie_at(lpr, i, got[i]) && near_tie_at(lpg, i, ref[i]);
-    printf("%s %s: outputs diverge at token %zu (%s)\n", tie ? "  note" : "FAIL", what, i, tie ? "near tie, backend numerics" : "NOT a near tie");
+    auto gap = [&](const std::vector<SampledToken> & lp) { return i < lp.size() && lp[i].top.size() >= 2 ? lp[i].top[0].logprob - lp[i].top[1].logprob : -1.0f; };
+    printf("%s %s: outputs diverge at token %zu (%s; top-2 gaps ref %.4f got %.4f, bound %.2f)\n", tie ? "  note" : "FAIL", what, i,
+           tie ? "near tie, backend numerics" : "NOT a near tie", gap(lpr), gap(lpg), NEAR_TIE);
     show("ref", lpr); show("got", lpg);
     return tie;
 }
