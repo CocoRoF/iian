@@ -6,6 +6,7 @@
 #include "iian/tokenizer.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -37,6 +38,9 @@ static std::vector<token_t> collect(Engine::Handle & h, std::string & text, uint
 // is numerics rather than a bug (everything after the flip legitimately differs). Anything else is a failure.
 static constexpr float NEAR_TIE = 0.1f;
 
+// backend noise: |delta logprob| of the sampled token over positions where two runs agree
+static size_t g_cmp_n = 0; static double g_cmp_sum = 0.0, g_cmp_max = 0.0;
+
 static bool near_tie_at(const std::vector<SampledToken> & lp, size_t i, token_t other) {
     if (i >= lp.size() || lp[i].top.size() < 2) return false;
     const float gap = lp[i].top[0].logprob - lp[i].top[1].logprob;
@@ -46,9 +50,15 @@ static bool near_tie_at(const std::vector<SampledToken> & lp, size_t i, token_t 
 // returns true when the outputs are equal or differ only by a near tie; prints an explanation otherwise
 static bool same_output(const Tokenizer & tok, const char * what, const std::vector<token_t> & ref, const std::vector<SampledToken> & lpr,
                         const std::vector<token_t> & got, const std::vector<SampledToken> & lpg) {
-    if (ref == got) return true;
     size_t i = 0;
-    while (i < ref.size() && i < got.size() && ref[i] == got[i]) i++;
+    while (i < ref.size() && i < got.size() && ref[i] == got[i]) {
+        if (i < lpr.size() && i < lpg.size()) {
+            const double d = std::fabs((double) lpr[i].logprob - (double) lpg[i].logprob);
+            g_cmp_n++; g_cmp_sum += d; if (d > g_cmp_max) g_cmp_max = d;
+        }
+        i++;
+    }
+    if (ref == got) return true;
     auto show = [&](const char * tag, const std::vector<SampledToken> & lp) {
         if (i >= lp.size()) { printf("    %s: (no logprobs)\n", tag); return; }
         printf("    %s: sampled %d '%s' logprob %.4f; top:", tag, lp[i].token, tok.token_to_piece(lp[i].token, true).c_str(), lp[i].logprob);
@@ -195,6 +205,7 @@ int main(int argc, char ** argv) {
         eng.stop();
     }
 
+    if (g_cmp_n) printf("backend numerics: |delta logprob| over %zu agreeing tokens: max %.4f mean %.5f\n", g_cmp_n, g_cmp_max, g_cmp_sum / g_cmp_n);
     printf("%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);
     return failures ? 1 : 0;
 }
