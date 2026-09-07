@@ -1,4 +1,6 @@
 #include "common.cuh"
+
+#include <cstdlib>
 #include "fattn-common.cuh"
 #include "fattn-mma-f16.cuh"
 #include "fattn-tile.cuh"
@@ -594,7 +596,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
         if (can_use_vector_kernel) {
             if (!ggml_is_quantized(K->type) && !ggml_is_quantized(V->type)) {
-                if (cc >= GGML_CUDA_CC_ADA_LOVELACE && Q->ne[1] == 1 && Q->ne[3] == 1 && !(gqa_ratio > 4 && K->ne[1] >= 8192)) {
+                // iian: the vec kernel handles the sequence dimension (blockIdx.z = sequence*ne02 + head, per-sequence
+                // KV_max), and for single-query decode groups of many sequences it beats the MMA kernel, which only
+                // fills gqa_ratio of its 64 columns. GGML_CUDA_FA_VEC_BATCHED=0 restores the upstream heuristic.
+                static const bool vec_batched = [] { const char * e = getenv("GGML_CUDA_FA_VEC_BATCHED"); return !e || atoi(e) != 0; }();
+                if (cc >= GGML_CUDA_CC_ADA_LOVELACE && Q->ne[1] == 1 && (Q->ne[3] == 1 || vec_batched) && !(gqa_ratio > 4 && K->ne[1] >= 8192)) {
                     return BEST_FATTN_KERNEL_VEC;
                 }
             } else {
