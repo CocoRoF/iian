@@ -45,6 +45,11 @@ struct common_grammar_options {
 
 std::string gbnf_format_literal(const std::string & literal);
 
+// iian: GBNF grammar whose root rule matches the (auto-anchored) regular expression, using the same regex
+// subset the schema converter supports for `pattern` (classes, groups, alternation, quantifiers incl. {m,n},
+// escapes). Throws std::invalid_argument for unsupported or malformed regexes.
+std::string regex_to_grammar(const std::string & regex, bool dotall = false);
+
 std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const common_grammar_options & options = {});
 
 } // namespace iian

@@ -420,7 +420,7 @@ private:
         }
     }
 
-    std::string _pattern_to_rule(const std::string & pattern, const std::string & name) {
+    std::string _pattern_to_rule(const std::string & pattern, const std::string & name, bool quoted = true) {
         if (pattern.length() < 2 || pattern.front() != '^' || pattern.back() != '$') {
             throw unsupported_pattern("not anchored with '^' and '$'");
         }
@@ -644,7 +644,7 @@ private:
             throw invalid_pattern("unbalanced parentheses");
         }
 
-        return _add_rule(name, "\"\\\"\" (" + rule + ") \"\\\"\"");
+        return quoted ? _add_rule(name, "\"\\\"\" (" + rule + ") \"\\\"\"") : _add_rule(name, rule);
     }
 
     /*
@@ -853,6 +853,19 @@ public:
           : _fetch_json(fetch_json), _dotall(dotall)
     {
         _rules["space"] = SPACE_RULE;
+    }
+
+    // iian: a bare regular expression as the root rule (no JSON string quoting). Throws std::invalid_argument
+    // for regexes the converter cannot express or parse.
+    void set_root_regex(const std::string & regex) {
+        try {
+            _pattern_to_rule(regex, "root", /*quoted*/ false);
+        } catch (const unsupported_pattern & e) {
+            throw std::invalid_argument("regex '" + regex + "' is not supported: " + e.what());
+        } catch (const invalid_pattern & e) {
+            throw std::invalid_argument("invalid regex '" + regex + "': " + e.what());
+        }
+        _rules.erase("space");   // unused by a bare regex
     }
 
     void resolve_refs(json & schema, const std::string & url) {
@@ -1269,6 +1282,20 @@ std::string json_schema_to_grammar(const common_json & schema, bool force_gbnf) 
         callbacks.resolve_refs(copy);
         callbacks.add_schema("", copy);
     });
+}
+
+std::string regex_to_grammar(const std::string & regex, bool dotall) {
+    // anchor: the converter only handles fully anchored patterns and generation is inherently anchored
+    std::string anchored = regex;
+    if (anchored.empty() || anchored.front() != '^') anchored.insert(anchored.begin(), '^');
+    size_t trailing_backslashes = 0;
+    for (size_t i = anchored.size(); i > 0 && anchored[i - 1] == '\\'; i--) trailing_backslashes++;
+    const bool ends_anchored = anchored.size() >= 2 && anchored.back() == '$' && (anchored.size() < 3 || anchored[anchored.size() - 2] != '\\' || trailing_backslashes % 2 == 0);
+    if (!ends_anchored) anchored += '$';
+    common_schema_converter converter([&](const std::string &) { return json(); }, dotall);
+    converter.set_root_regex(anchored);
+    converter.check_errors();
+    return converter.format_grammar();
 }
 
 std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const common_grammar_options & options) {

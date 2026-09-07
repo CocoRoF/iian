@@ -208,10 +208,16 @@ static void validate_messages(const json & messages) {
 
 
 // Structured outputs. Accepts OpenAI `response_format` ({"type":"json_object"} | {"type":"json_schema","json_schema":{"schema":...}}),
-// vLLM-style `guided_json` / `guided_grammar` / `guided_choice` / `structured_outputs: {json|grammar|choice}` and the
-// iian extension `grammar` (GBNF). At most one constraint may be given.
+// vLLM-style `guided_json` / `guided_grammar` / `guided_choice` / `guided_regex` / `structured_outputs:
+// {json|grammar|choice|regex}` and the iian extension `grammar` (GBNF). At most one constraint may be given.
 static void parse_structured_outputs(const json & body, SamplingParams & params) {
     int n = 0;
+    auto set_regex = [&](const json & re, const char * param) {
+        if (!re.is_string() || re.get<std::string>().empty()) throw ApiError::bad_request(std::string("'") + param + "' must be a non-empty regex string", param);
+        try { params.grammar = regex_to_grammar(re.get<std::string>()); }
+        catch (const std::exception & e) { throw ApiError::bad_request(e.what(), param); }
+        n++;
+    };
     auto set_schema = [&](const json & schema, const char * param) {
         if (schema.is_string()) params.json_schema = schema.get<std::string>();
         else if (schema.is_object()) params.json_schema = schema.dump();
@@ -249,13 +255,14 @@ static void parse_structured_outputs(const json & body, SamplingParams & params)
     if (auto it = body.find("guided_grammar"); it != body.end() && !it->is_null()) { if (!it->is_string()) throw ApiError::bad_request("'guided_grammar' must be a GBNF string", "guided_grammar"); params.grammar = it->get<std::string>(); n++; }
     if (auto it = body.find("grammar"); it != body.end() && !it->is_null()) { if (!it->is_string()) throw ApiError::bad_request("'grammar' must be a GBNF string", "grammar"); params.grammar = it->get<std::string>(); n++; }
     if (auto it = body.find("guided_choice"); it != body.end() && !it->is_null()) set_choice(*it, "guided_choice");
+    if (auto it = body.find("guided_regex"); it != body.end() && !it->is_null()) set_regex(*it, "guided_regex");
     if (const json * so = json_object(body, "structured_outputs")) {
         if (auto it = so->find("json"); it != so->end() && !it->is_null()) set_schema(*it, "structured_outputs.json");
         if (auto it = so->find("grammar"); it != so->end() && !it->is_null()) { params.grammar = it->get<std::string>(); n++; }
         if (auto it = so->find("choice"); it != so->end() && !it->is_null()) set_choice(*it, "structured_outputs.choice");
-        if (auto it = so->find("regex"); it != so->end() && !it->is_null()) throw ApiError::not_supported("regex-constrained output is not supported yet (use a grammar)", "structured_outputs.regex");
+        if (auto it = so->find("regex"); it != so->end() && !it->is_null()) set_regex(*it, "structured_outputs.regex");
     }
-    if (n > 1) throw ApiError::bad_request("only one structured-output constraint may be given (response_format / guided_json / guided_grammar / guided_choice / grammar)", "response_format");
+    if (n > 1) throw ApiError::bad_request("only one structured-output constraint may be given (response_format / guided_json / guided_grammar / guided_choice / guided_regex / grammar)", "response_format");
 }
 
 GenerationRequest parse_chat_request(ServerContext & ctx, const json & body, const std::string & request_id_hdr) {

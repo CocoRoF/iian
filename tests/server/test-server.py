@@ -6,6 +6,7 @@ Only the Python standard library is used.
 """
 import http.client
 import json
+import re
 import os
 import socket
 import subprocess
@@ -197,6 +198,14 @@ def main():
         st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": "Count:", "max_tokens": 12, "temperature": 0, "grammar": 'root ::= " " [0-9]+ ("," [0-9]+)*'})
         t = j["choices"][0]["text"] if st == 200 else ""
         check("GBNF grammar honoured", st == 200 and t and all(c in " 0123456789," for c in t), (st, t))
+        st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": "My phone number is", "max_tokens": 16, "temperature": 0, "guided_regex": " [0-9]{3}-[0-9]{4}"})
+        t = j["choices"][0]["text"] if st == 200 else ""
+        check("guided_regex honoured", st == 200 and re.fullmatch(r" [0-9]{3}-[0-9]{4}", t) is not None, (st, t))
+        st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": "Answer:", "max_tokens": 8, "temperature": 0, "structured_outputs": {"regex": " (yes|no)"}})
+        t = j["choices"][0]["text"] if st == 200 else ""
+        check("structured_outputs.regex honoured", st == 200 and t in (" yes", " no"), (st, t))
+        st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": "x", "max_tokens": 2, "guided_regex": "(unbalanced"})
+        check("400 on invalid regex", st == 400, (st, j))
         st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": "x", "max_tokens": 2, "grammar": "root ::= (unterminated"})
         check("400 on invalid grammar", st == 400, (st, j))
         st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": "x", "max_tokens": 2, "guided_choice": ["a"], "grammar": "root ::= \"a\""})

@@ -7,6 +7,7 @@
 #include "paths.h"
 #include "state.h"
 
+#include "iian/grammar/json_schema.h"
 #include "iian/chat_template.h"
 #include "iian/engine.h"
 #include "iian/log.h"
@@ -39,6 +40,7 @@ SamplingParams sampling_from_args(const ArgParser & p) {
     auto file_or_literal = [](const std::string & v) { auto f = read_file(expand_user(v)); return f ? *f : v; };
     if (p.has("grammar")) sp.grammar = file_or_literal(p.get("grammar"));
     if (p.has("json-schema")) sp.json_schema = file_or_literal(p.get("json-schema"));
+    if (p.has("regex")) sp.grammar = regex_to_grammar(p.get("regex"));
     return sp;
 }
 
@@ -177,7 +179,8 @@ int cmd_run(const Args & args) {
     if (!setup_logging(p, err)) return fail(err);
     auto be = make_backend(p.positional(0), p, err);
     if (!be) return fail(err);
-    SamplingParams sp = sampling_from_args(p);
+    SamplingParams sp;
+    try { sp = sampling_from_args(p); } catch (const std::exception & e) { return fail(e.what()); }
 
     nlohmann::json messages = nlohmann::json::array();
     if (p.has("system")) messages.push_back({{"role", "system"}, {"content", p.get("system")}});
@@ -237,7 +240,8 @@ int cmd_complete(const Args & args) {
     if (prompt == "-") { std::string all, l; while (std::getline(std::cin, l)) all += l + "\n"; prompt = all; }
     auto be = make_backend(p.positional(0), p, err);
     if (!be) return fail(err);
-    SamplingParams sp = sampling_from_args(p);
+    SamplingParams sp;
+    try { sp = sampling_from_args(p); } catch (const std::exception & e) { return fail(e.what()); }
     if (!p.has("max-tokens")) sp.max_tokens = 128;
     std::string text;
     const bool js = p.get_bool("json");

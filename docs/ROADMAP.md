@@ -18,7 +18,7 @@ Status legend: ✅ done · 🚧 in progress · ⬜ planned
 - ✅ OpenAI server: /v1/chat/completions (+SSE), /v1/completions, /v1/models, /health, /metrics, /tokenize
 - ✅ `iian` CLI: serve (foreground/daemon), ps, stop, logs, status, run, complete, pull, ls, rm, info, bench
 - ✅ more architectures (see docs/models.md): qwen3, gemma3 (sliding window), llama-3.x rope factors, phi3, granite, smollm3
-- ✅ structured output: GBNF grammar sampler (llama-grammar port) + JSON schema → grammar; `response_format` json_object/json_schema, guided_json/choice/grammar
+- ✅ structured output: GBNF grammar sampler (llama-grammar port) + JSON schema → grammar + regex → grammar; `response_format` json_object/json_schema, guided_json/choice/grammar/regex
 - ✅ tool calling: hermes/qwen, llama3, mistral, generic formats; `tool_choice` required/named via grammar; streaming deltas
 - ✅ embeddings endpoint (`/v1/embeddings`, mean/last/cls pooling, base64, dimensions); ⬜ reranking
 - ✅ multi-model serving: `iian serve a.gguf b.gguf --models-dir D --models-max N --lazy`; per-request routing, lazy load, LRU unload, admin load/unload

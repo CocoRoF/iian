@@ -68,6 +68,7 @@ void add_sampling_flags(ArgParser & p) {
     p.add_repeatable("--stop", "Stop string (repeatable)", "S");
     p.add("--grammar", "Constrain output with a GBNF grammar (file path or literal)", "GBNF");
     p.add("--json-schema", "Constrain output to a JSON schema (file path or literal; '{}' = any JSON object)", "SCHEMA");
+    p.add("--regex", "Constrain output to a regular expression (anchored; converted to a grammar)", "RE");
 }
 
 DeviceConfig device_config_from_args(const ArgParser & p) {

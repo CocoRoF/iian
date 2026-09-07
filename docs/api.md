@@ -40,9 +40,11 @@ small models produce valid calls. Streaming holds back text from the point a cal
 Exactly one of: `response_format: {"type":"json_object"}` (any JSON object), `response_format:
 {"type":"json_schema","json_schema":{"name":..,"schema":{...}}}` (JSON conforming to the schema),
 `guided_json` (schema object or string), `guided_choice` (array of strings: the output is one of them),
-`guided_grammar` / `grammar` (a GBNF grammar in llama.cpp syntax, root rule `root`), or a vLLM-style
-`structured_outputs: {json|grammar|choice}` object. Schemas are converted to GBNF (llama.cpp's converter) and
-enforced token-by-token by the grammar sampler; an invalid grammar or schema is a 400. `regex` is not supported yet.
+`guided_grammar` / `grammar` (a GBNF grammar in llama.cpp syntax, root rule `root`), `guided_regex` (an anchored
+regular expression: classes, groups, alternation, `*+?{m,n}` quantifiers, escapes; no lookaround/backreferences),
+or a vLLM-style `structured_outputs: {json|grammar|choice|regex}` object. Schemas and regexes are converted to
+GBNF (llama.cpp's converter) and enforced token-by-token by the grammar sampler; an invalid grammar, schema or
+regex is a 400.
 
 ## POST /v1/completions
 `prompt` (string, array of strings, or array of token ids), `suffix` (400: not supported), `echo`,
