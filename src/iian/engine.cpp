@@ -13,6 +13,7 @@
 #include "ggml.h"
 
 #include <algorithm>
+#include <numeric>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -144,6 +145,11 @@ Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(
     } else if (cfg.kv_cache_bytes) {
         cells = (uint32_t) std::min<size_t>(cells, cfg.kv_cache_bytes / per_cell);
     }
+    // ggml's CUDA flash-attention kernels take their fast paths only when the KV length is a multiple of 256
+    // (FATTN_KQ_STRIDE); the attention window is padded to 256 but clipped at the cache end, so keep the cell count
+    // a multiple of lcm(block_size, 256) (at most 255 extra cells).
+    const uint32_t align = std::lcm<uint32_t>(std::max<uint32_t>(1, kcfg.block_size), 256u);
+    cells = (cells + align - 1) / align * align;
     if (cells < max_model_len_) {
         char b[256];
         snprintf(b, sizeof b, "KV cache too small: %u cells (%.2f GiB) but max_model_len is %u; lower --max-model-len, use --kv-dtype q8_0, or raise --kv-cache-gb",
