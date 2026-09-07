@@ -1,0 +1,7 @@
+<s><|system_start|>You are a helpful assistant with access to tools.<|system_end|><|developer_start|>Deliberation: enabled
+Tool Capabilities:
+// Get the current weather for a city
+type get_weather = (_: {
+// City name
+location: string
+}) => any;<|developer_end|><|user_start|>What is the weather in Paris?<|user_end|><|assistant_start|><|tools_prefix|>[{"get_weather": {"location": "Paris"}}]<|tools_suffix|>[{"temperature": 21}]It is 21 degrees in Paris.<|assistant_end|><|user_start|>Thanks!<|user_end|><|assistant_start|>

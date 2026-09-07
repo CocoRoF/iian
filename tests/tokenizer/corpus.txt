@@ -1,0 +1,44 @@
+Hello, world!
+The quick brown fox jumps over the lazy dog.
+ leading space
+trailing space 
+   multiple   spaces   between   words   
+tabs\there\tand\tthere
+col1	col2	col3
+line1\nline2\nline3
+\n\n\n
+Hello\r\nWindows\r\n
+trailing newline\n
+안녕하세요, 세계! 한국어 토크나이저 테스트입니다.
+日本語のテキストをトークン化する。
+中文分词测试：你好，世界！
+Emoji: 😀🎉👍🏽 family: 👨‍👩‍👧‍👦 flags: 🇰🇷🇺🇸
+Mixed: English 한국어 日本語 中文 Русский العربية עברית हिन्दी ไทย
+Accents: café naïve résumé Straße Ærø Ångström
+Numbers: 1234567890 3.14159 1,000,000 2024-09-07 12:34:56
+def fib(n):\n    return n if n < 2 else fib(n-1) + fib(n-2)\n
+#include <stdio.h>\nint main() { printf("hi\\n"); return 0; }
+{"key": "value", "list": [1, 2, 3], "nested": {"a": null}}
+<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n
+<|endoftext|>
+text before <|im_start|> text after
+<|im_start|><|im_start|><|im_end|>
+<|fake_special|> and <|im_start| and im_end|>
+it's don't I'm you're we've they'll he'd IT'S DON'T
+Punctuation!!! ??? ... --- *** ((( ))) [[[ ]]] {{{ }}} <<< >>>
+Symbols: $100 €50 £20 ¥1000 ©®™ ±×÷ ←→↑↓ ∑∫√∞
+URL: https://example.com/path?query=1&b=2#frag  email: a.b@c.org
+CamelCaseWords snake_case_words kebab-case-words SCREAMING_CASE
+nbsp:[ ] ideographic:[　] thin:[ ] nel:[]
+zero-width: a‌b‍c​d
+combining: é ñ å (decomposed) vs é ñ å (precomposed)
+Long digits: 12345678901234567890123456789 and 000111222333
+Repeated: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa abababababababababababababababababababababababababababababababababababababababab
+The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀 The quick brown fox jumps over the lazy dog; 빠른 갈색 여우가 게으른 개를 뛰어넘는다; 😀
+
+ 
+\t
+Invalid UTF-8: \xff\xfe bytes \xc0\x80 overlong \xe2\x82 truncated
+Control chars: \x01\x02\x1f end
+Mixed script no spaces:Hello안녕123日本語abc
+Backslashes: C:\\Users\\name \\n literal

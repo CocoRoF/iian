@@ -1,0 +1,12 @@
+<bos><start_of_turn>user
+You are a helpful assistant
+Hello<end_of_turn>
+<start_of_turn>model
+Hi there<end_of_turn>
+<start_of_turn>user
+Who are you<end_of_turn>
+<start_of_turn>model
+I am an assistant<end_of_turn>
+<start_of_turn>user
+Another question<end_of_turn>
+<start_of_turn>model

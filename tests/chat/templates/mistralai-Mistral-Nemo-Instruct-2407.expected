@@ -1,0 +1,3 @@
+<s>[INST]What is the weather in Paris?[/INST][TOOL_CALLS][{"name": "get_weather", "arguments": {"location": "Paris"}, "id": "call00001"}]</s>[TOOL_RESULTS]{"content": {"temperature": 21}, "call_id": "call00001"}[/TOOL_RESULTS]It is 21 degrees in Paris.</s>[AVAILABLE_TOOLS][{"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city", "parameters": {"properties": {"location": {"description": "City name", "type": "string"}}, "required": ["location"], "type": "object"}}}][/AVAILABLE_TOOLS][INST]You are a helpful assistant with access to tools.
+
+Thanks![/INST]
