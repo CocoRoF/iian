@@ -6,6 +6,7 @@
 #include "iian/model.h"
 #include "iian/tokenizer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -54,7 +55,7 @@ int main(int argc, char ** argv) {
         }
         auto t0 = std::chrono::steady_clock::now();
         eng.start();
-        double ttft_sum = 0; int n_first = 0; long n_gen = 0;
+        double ttft_sum = 0, ttft_max = 0; int n_first = 0; long n_gen = 0;
         std::vector<bool> got_first(c, false);
         std::vector<int> done(c, 0);
         int n_done = 0;
@@ -65,7 +66,7 @@ int main(int argc, char ** argv) {
                 OutputChunk ch;
                 if (!hs[i].out->try_pop(ch)) continue;
                 double now = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-                if (!got_first[i] && !ch.tokens.empty()) { got_first[i] = true; ttft_sum += now; n_first++; t_last[i] = now; }
+                if (!got_first[i] && !ch.tokens.empty()) { got_first[i] = true; ttft_sum += now; ttft_max = std::max(ttft_max, now); n_first++; t_last[i] = now; }
                 else if (!ch.tokens.empty()) { tpot_sum[i] += (now - t_last[i]) / ch.tokens.size(); tpot_n[i]++; t_last[i] = now; }
                 n_gen += (long) ch.tokens.size();
                 if (ch.finished) { done[i] = 1; n_done++; }
@@ -75,7 +76,10 @@ int main(int argc, char ** argv) {
         double secs = std::chrono::duration<double>(t1 - t0).count();
         double tpot = 0; int tn = 0; for (int i = 0; i < c; i++) if (tpot_n[i]) { tpot += tpot_sum[i] / tpot_n[i]; tn++; }
         eng.stop();
-        printf("%-12d %12.1f %12.1f %12.1f %10.0f %10.1f\n", c, (double) c * prompt_len / secs, (double) n_gen / secs,
+        // prompt tok/s: all prompt tokens over the time until every request has its first token (the prefill phase;
+        // llama-batched-bench's S_PP). gen/total tok/s are over the whole run.
+        const double prefill_secs = ttft_max > 0 ? ttft_max / 1000.0 : secs;
+        printf("%-12d %12.1f %12.1f %12.1f %10.0f %10.1f\n", c, (double) c * prompt_len / prefill_secs, (double) n_gen / secs,
                ((double) c * prompt_len + n_gen) / secs, n_first ? ttft_sum / n_first : 0.0, tn ? tpot / tn : 0.0);
     }
     return 0;

@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 export PATH=$HOME/.local/bin:/usr/local/cuda-13.0/bin:$PATH
 export CUDACXX=/usr/local/cuda-13.0/bin/nvcc
 git pull -q --ff-only || exit 1
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_CUDA_COMPILER=$CUDACXX > build-cmake.log 2>&1
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DGGML_CUDA_GRAPHS=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_CUDA_COMPILER=$CUDACXX > build-cmake.log 2>&1
 cmake --build build -j 20 > build.log 2>&1 || { tail -30 build.log; exit 1; }
 M=models/SmolLM2-135M-Instruct-F16.gguf
 # use the GPU with the most free memory (the box is shared)

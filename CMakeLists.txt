@@ -29,6 +29,11 @@ endif()
 if(NOT DEFINED GGML_LLAMAFILE)
     set(GGML_LLAMAFILE ON CACHE BOOL "")
 endif()
+# CUDA graphs: standalone ggml defaults them OFF ("llama.cpp only"); they remove per-kernel launch overhead in
+# steady-state decode (~1.5x single-stream tok/s on an RTX 5090), so iian turns them on like llama.cpp does.
+if(NOT DEFINED GGML_CUDA_GRAPHS)
+    set(GGML_CUDA_GRAPHS_DEFAULT ON)
+endif()
 add_subdirectory(third_party/ggml)
 
 # ---- third party header-only -----------------------------------------------
