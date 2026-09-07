@@ -34,7 +34,7 @@ struct Shape { int hd, nh, nhkv, T, S, L, len; };
 // mode 0: batched (ne3 = S); mode 1: S separate calls; mode 2: masked window (ne3 = 1, n_kv = S*L)
 static double run(ggml_backend_t backend, const Shape & sh, int mode, int iters, float * checksum) {
     const int n_calls = mode == 1 ? sh.S : 1;
-    ggml_init_params ip = { ggml_tensor_overhead() * 64 + ggml_graph_overhead(), nullptr, true };
+    ggml_init_params ip = { ggml_tensor_overhead() * (size_t) (16 + 8 * n_calls) + ggml_graph_overhead_custom(16 + 8 * n_calls, false), nullptr, true };
     ggml_context * ctx = ggml_init(ip);
     std::vector<ggml_tensor *> outs;
     ggml_tensor * q, * k, * v, * mask;
@@ -50,7 +50,7 @@ static double run(ggml_backend_t backend, const Shape & sh, int mode, int iters,
         mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, sh.L, sh.T, 1, sh.S);
     }
     ggml_set_input(q); ggml_set_input(k); ggml_set_input(v); ggml_set_input(mask);
-    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, 16 + 8 * n_calls, false);
     const float scale = 1.0f / sqrtf((float) sh.hd);
     for (int c = 0; c < n_calls; c++) {
         ggml_tensor * qc = q, * kc = k, * vc = v, * mc = mask;
