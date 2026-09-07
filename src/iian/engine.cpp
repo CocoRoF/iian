@@ -97,6 +97,7 @@ static bool dump_tensor_cb(ggml_tensor * t, bool ask, void *) {
 Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(std::move(model)), cfg_(cfg) {
     dump_tensors_ = getenv("IIAN_DUMP_TENSORS") != nullptr;
     if (getenv("IIAN_NO_FLASH_ATTN")) cfg_.flash_attn = false;   // debugging aid: force the mul_mat+softmax attention path
+    if (getenv("IIAN_NO_WARMUP")) cfg_.warmup = false;           // debugging aid: skip the start-up warmup
     const HParams & hp = model_->hparams();
     // default context: the model's training context, capped at 8k unless the user asks for more
     // (a 128k default would allocate tens of GiB of KV cache before anyone typed a prompt)
@@ -247,8 +248,8 @@ void Engine::warmup() {
         int steps = 0;
         for (; steps < 64; steps++) { if (!step()) break; }
         for (Request * r : sched_->all_requests()) finish(r, RequestStatus::FINISHED_ABORTED, FinishReason::ABORT, "warmup");
-        bool finished = false; OutputChunk c; while (h.out->try_pop(c)) finished |= c.finished;
-        LOG_INF("engine", "warmup: %u-token prefill + decode, %d steps%s in %.0f ms", n, steps, finished ? "" : " (request not finished)", (ggml_time_us() - t0) / 1000.0);
+        bool finished = false; uint32_t n_out = 0; OutputChunk c; while (h.out->try_pop(c)) { finished |= c.finished; n_out = c.n_output_tokens; }
+        LOG_INF("engine", "warmup: %u-token prefill + %u decoded, %d steps%s in %.0f ms", n, n_out, steps, finished ? "" : " (request not finished)", (ggml_time_us() - t0) / 1000.0);
     } catch (const std::exception & e) {
         LOG_WRN("engine", "warmup failed (%s); continuing", e.what());
     }
