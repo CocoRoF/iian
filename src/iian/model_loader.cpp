@@ -182,9 +182,27 @@ public:
             if (flags & NOT_REQUIRED) return nullptr;
             throw std::runtime_error("model is missing required tensor: " + name);
         }
+        std::string key = name;
         if (flags & DUPLICATED) {
+            // a tensor reused in another role (tied lm_head = token_embd): share it when it already sits on the
+            // device the new role wants, otherwise create a second copy there (llama.cpp's TENSOR_DUPLICATED),
+            // so e.g. the output matmul runs on the GPU instead of round-tripping to the CPU-resident embedding
             auto it = model_.tensors_.find(name);
-            if (it != model_.tensors_.end()) return it->second;
+            if (it != model_.tensors_.end()) {
+                ggml_backend_buffer_type_t want = select_buft(OUTPUT_ROLE, name, *info);
+                if (tensor_buft_[it->second] == want) return it->second;
+                key = name + "#dup";
+                if (auto d = model_.tensors_.find(key); d != model_.tensors_.end()) return d->second;
+                ggml_context * ctx = ctx_for(want);
+                ggml_tensor * t = ggml_new_tensor(ctx, info->type, info->n_dims, info->ne);
+                ggml_set_name(t, name.c_str());
+                model_.tensors_[key] = t;
+                tensor_info_[t] = info;
+                tensor_buft_[t] = want;
+                model_.total_bytes_ += info->nbytes;
+                LOG_DBG("model", "duplicating %s on %s for the output role", name.c_str(), ggml_backend_buft_name(want));
+                return t;
+            }
         }
         if (model_.tensors_.count(name)) throw std::runtime_error("tensor created twice: " + name);
 
@@ -208,6 +226,7 @@ public:
         ggml_set_name(t, name.c_str());
         model_.tensors_[name] = t;
         tensor_info_[t] = info;
+        tensor_buft_[t] = buft;
         model_.n_params_ += (uint64_t) ggml_nelements(t);
         model_.total_bytes_ += info->nbytes;
         return t;
@@ -229,6 +248,8 @@ public:
     std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_map_;
     std::vector<ggml_backend_buffer_type_t> ctx_order_;
     std::map<ggml_tensor *, const GgufTensorInfo *> tensor_info_;
+    std::map<ggml_tensor *, ggml_backend_buffer_type_t> tensor_buft_;
+    static constexpr int OUTPUT_ROLE = -2;   // `layer` value passed to select_buft for a duplicated output weight
 
 private:
     Model & model_;
@@ -353,14 +374,15 @@ std::unique_ptr<Model> ModelLoader::load(const std::string & path, const DeviceC
     size_t n_repacked = 0;
     tc.select_buft = [&](int layer, const std::string & name, const GgufTensorInfo & info) -> ggml_backend_buffer_type_t {
         ggml_backend_dev_t dev;
+        const bool as_output = layer == TensorCreatorImpl::OUTPUT_ROLE;   // token_embd reused as the lm_head
         if (layer >= 0) dev = m->dev_layer_[layer];
-        else if (name.rfind("token_embd", 0) == 0) dev = m->dev_input_;
+        else if (!as_output && name.rfind("token_embd", 0) == 0) dev = m->dev_input_;
         else dev = m->dev_output_;
         ggml_backend_buffer_type_t def = ggml_backend_dev_buffer_type(dev);
         if (dev != cpu || cpu_extra_bufts.empty()) return def;
         // only matmul weights qualify: 2-D (mul_mat) or 3-D expert stacks (mul_mat_id); embeddings use get_rows
         const bool is_weight = name.size() > 7 && name.compare(name.size() - 7, 7, ".weight") == 0;
-        if (!is_weight || name.rfind("token_embd", 0) == 0 || name.find("norm") != std::string::npos || info.n_dims < 2) return def;
+        if (!is_weight || (!as_output && name.rfind("token_embd", 0) == 0) || name.find("norm") != std::string::npos || info.n_dims < 2) return def;
         for (auto * buft : cpu_extra_bufts) {
             ggml_init_params ip = { ggml_tensor_overhead() * 8, nullptr, true };
             ggml_context * ctx = ggml_init(ip);
