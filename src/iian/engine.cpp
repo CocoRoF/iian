@@ -61,6 +61,7 @@ static bool dump_tensor_cb(ggml_tensor * t, bool ask, void *) {
 
 Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(std::move(model)), cfg_(cfg) {
     dump_tensors_ = getenv("IIAN_DUMP_TENSORS") != nullptr;
+    if (getenv("IIAN_NO_FLASH_ATTN")) cfg_.flash_attn = false;   // debugging aid: force the mul_mat+softmax attention path
     const HParams & hp = model_->hparams();
     // default context: the model's training context, capped at 8k unless the user asks for more
     // (a 128k default would allocate tens of GiB of KV cache before anyone typed a prompt)
