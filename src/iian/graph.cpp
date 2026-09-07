@@ -367,12 +367,11 @@ void GraphContext::set_inputs() {
 void GraphContext::fill_kq_mask(ggml_tensor * mask, bool swa) const {
     const int64_t n_kv = ub.n_kv;
     const bool f16 = mask->type == GGML_TYPE_F16;
-    std::vector<float> row(n_kv);
-    std::vector<ggml_fp16_t> row16(f16 ? n_kv : 0);
-    // rows for tokens of the same sequence share everything except the causal boundary,
-    // so we recompute per token but only touch the cells of that sequence
+    // build the whole [n_kv, n_tokens] mask on the host and upload it once (per-row uploads are far too
+    // slow for GPU buffers)
+    std::vector<float> full((size_t) n_kv * ub.n_tokens, -INFINITY);
     for (uint32_t i = 0; i < ub.n_tokens; i++) {
-        std::fill(row.begin(), row.end(), -INFINITY);
+        float * row = full.data() + (size_t) i * n_kv;
         const auto & s = ub.seqs[ub.seq_idx[i]];
         const pos_t p1 = ub.pos[i];
         for (size_t c = 0; c < s.cells.size(); c++) {
@@ -383,12 +382,13 @@ void GraphContext::fill_kq_mask(ggml_tensor * mask, bool swa) const {
                 if (j >= 0 && j < n_kv) row[j] = hp.f_max_alibi_bias > 0.0f ? -(float) std::abs(p1 - s.cell_pos[c]) : 0.0f;
             }
         }
-        if (f16) {
-            ggml_fp32_to_fp16_row(row.data(), row16.data(), n_kv);
-            ggml_backend_tensor_set(mask, row16.data(), (size_t) i * n_kv * sizeof(ggml_fp16_t), n_kv * sizeof(ggml_fp16_t));
-        } else {
-            ggml_backend_tensor_set(mask, row.data(), (size_t) i * n_kv * sizeof(float), n_kv * sizeof(float));
-        }
+    }
+    if (f16) {
+        std::vector<ggml_fp16_t> full16(full.size());
+        ggml_fp32_to_fp16_row(full.data(), full16.data(), (int64_t) full.size());
+        ggml_backend_tensor_set(mask, full16.data(), 0, full16.size() * sizeof(ggml_fp16_t));
+    } else {
+        ggml_backend_tensor_set(mask, full.data(), 0, full.size() * sizeof(float));
     }
 }
 
