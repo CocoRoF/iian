@@ -295,8 +295,16 @@ std::unique_ptr<Model> ModelLoader::load(const std::string & path, const DeviceC
     std::vector<ggml_backend_dev_t> gpus;
     ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (!cpu) throw std::runtime_error("no CPU backend device found (ggml CPU backend not registered?)");
-    if (!cfg.devices.empty()) {
-        for (auto & name : cfg.devices) {
+    std::vector<std::string> wanted = cfg.devices;
+    if (wanted.empty()) {
+        // IIAN_DEVICES="CUDA1" or "CUDA0,CUDA1": restrict placement without touching the config
+        if (const char * e = getenv("IIAN_DEVICES")) {
+            std::string v = e; size_t i = 0;
+            while (i <= v.size()) { size_t j = v.find(',', i); if (j == std::string::npos) j = v.size(); if (j > i) wanted.push_back(v.substr(i, j - i)); i = j + 1; }
+        }
+    }
+    if (!wanted.empty()) {
+        for (auto & name : wanted) {
             auto * d = find_device(name);
             if (!d) throw std::runtime_error("unknown device: " + name);
             if (ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_CPU) gpus.push_back(d);

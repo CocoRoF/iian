@@ -101,6 +101,8 @@ Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(
         if (budget == 0) {
             size_t free_b = 0, total_b = 0;
             ggml_backend_dev_memory(model_->dev_layer(hp.n_layer - 1), &free_b, &total_b);
+            // some backends report host (UMA) memory as "free"; never trust more than the device's total
+            if (total_b && free_b > total_b) free_b = total_b;
             if (free_b) budget = free_b / 4;   // conservative: weights, compute buffers and other tenants share this memory
         }
         if (budget) cells = (uint32_t) std::min<size_t>(cells, budget / per_cell);

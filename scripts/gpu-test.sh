@@ -10,6 +10,10 @@ git pull -q --ff-only
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_CUDA_COMPILER=$CUDACXX > build-cmake.log 2>&1
 cmake --build build -j 20 > build.log 2>&1 || { tail -30 build.log; exit 1; }
 M=models/SmolLM2-135M-Instruct-F16.gguf
+# use the GPU with the most free memory (the box is shared)
+BEST=$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits | sort -t, -k2 -nr | head -1 | cut -d, -f1 | tr -d ' ')
+export IIAN_DEVICES="CUDA${BEST:-0}"
+echo "== using $IIAN_DEVICES"; nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv
 echo "== devices"; ./build/tools/iian/iian version | tail -4
 echo "== generate (GPU)"; ./build/tests/test-generate $M "The capital of France is" 48 --threads 8 2>&1 | grep -E "TEXT|tok/s|backends|ready" | cut -c1-200
 echo "== batching (GPU)"; ./build/tests/test-batching $M 2>&1 | grep -E "^\[|PASSED|FAIL"

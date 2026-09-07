@@ -78,3 +78,4 @@ prints prompt/generation/total tokens per second, mean time-to-first-token and p
 {"port": 8000, "max-model-len": 4096, "max-num-seqs": 64, "kv-dtype": "q8_0", "enable-admin": true}
 ```
 Environment overrides use the flag name upper-cased with `-` -> `_`: `IIAN_PORT=8000`, `IIAN_LOG_FORMAT=json`.
+`IIAN_DEVICES=CUDA1` (or `CUDA0,CUDA1`) restricts model placement when `--device` is not given.
