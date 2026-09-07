@@ -31,6 +31,7 @@ void add_engine_flags(ArgParser & p) {
     p.add("--block-size", "KV cache block size in tokens (prefix-cache granularity)", "N", "16");
     p.add("--no-prefix-caching", "Disable automatic prefix caching");
     p.add("--no-flash-attn", "Disable flash attention");
+    p.add("--no-warmup", "Skip the start-up warmup step (a small prefill + decode that initialises the backend)");
     p.add("--attention", "auto | masked | paged | gather (auto: paged kernel on CPU, gather = per-sequence batched flash attention on GPU)", "MODE", "auto");
     p.add("--seed", "Base RNG seed for sampling (0 = per-request random)", "N", "0");
     p.add("--spec-ngram", "Speculative decoding via prompt lookup: draft tokens per step (0 = off; try 4)", "N", "0");
@@ -95,6 +96,7 @@ EngineConfig engine_config_from_args(const ArgParser & p) {
     e.block_size = (uint32_t) p.get_int("block-size");
     e.enable_prefix_caching = !p.get_bool("no-prefix-caching");
     e.flash_attn = !p.get_bool("no-flash-attn");
+    e.warmup = !p.get_bool("no-warmup");
     e.attention = p.get("attention");
     e.seed = (uint64_t) p.get_int("seed");
     e.spec_ngram = (uint32_t) p.get_int("spec-ngram");

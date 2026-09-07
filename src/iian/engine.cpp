@@ -227,7 +227,31 @@ std::string Engine::backend_summary() const {
 
 void Engine::start() {
     if (running_.exchange(true)) return;
+    if (cfg_.warmup) warmup();
     thread_ = std::thread([this] { run_loop(); });
+}
+
+// One small prefill batch plus a decode step before serving: loads the backend kernels (CUDA lazy module loading),
+// initialises cuBLAS and captures the first CUDA graph, so the first real request does not pay for it (the same
+// idea as llama.cpp's start-up warmup). Runs synchronously on the caller's thread before the engine thread exists.
+void Engine::warmup() {
+    const int64_t t0 = ggml_time_us();
+    const uint32_t n = std::max<uint32_t>(1, std::min<uint32_t>({64u, max_model_len_ > 4 ? max_model_len_ - 4 : 1u, cfg_.sched.max_num_batched_tokens}));
+    const auto & sp = model_->tokenizer().special();
+    const token_t t = sp.bos != TOKEN_NULL ? sp.bos : (sp.eos != TOKEN_NULL ? sp.eos : 0);
+    std::vector<token_t> toks(n, t);
+    SamplingParams params; params.temperature = 0.0f; params.max_tokens = 2; params.ignore_eos = true;
+    RequestOptions opts; opts.cache_salt = 0x7761726d75702e69ULL;   // private prefix-cache namespace
+    try {
+        Handle h = submit(std::move(toks), params, opts);
+        int steps = 0;
+        for (; steps < 64; steps++) { if (!step()) break; }
+        for (Request * r : sched_->all_requests()) finish(r, RequestStatus::FINISHED_ABORTED, FinishReason::ABORT, "warmup");
+        bool finished = false; OutputChunk c; while (h.out->try_pop(c)) finished |= c.finished;
+        LOG_INF("engine", "warmup: %u-token prefill + decode, %d steps%s in %.0f ms", n, steps, finished ? "" : " (request not finished)", (ggml_time_us() - t0) / 1000.0);
+    } catch (const std::exception & e) {
+        LOG_WRN("engine", "warmup failed (%s); continuing", e.what());
+    }
 }
 
 void Engine::stop() {

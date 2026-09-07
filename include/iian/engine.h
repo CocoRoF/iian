@@ -32,6 +32,7 @@ struct EngineConfig {
     bool     flash_attn = true;
     std::string attention = "auto";     // auto | masked | paged | gather  (paged = CPU kernel; gather = per-sequence batched flash attention)
     bool attention_force_paged = false;  // set when attention == "paged": use the kernel even for tiny batches
+    bool warmup = true;                  // run a small prefill + decode inside start() so kernels, cuBLAS and CUDA graphs are initialised before the first request
     bool     enable_prefix_caching = true;
     uint64_t seed = 0;
     // speculative decoding via prompt lookup (n-gram): propose up to spec_ngram tokens that followed the most recent
@@ -89,6 +90,7 @@ public:
 
     // Run one scheduler/compute step synchronously (used by tests and by the thread loop).
     bool step();
+    void warmup();
 
 private:
     struct GraphState;
