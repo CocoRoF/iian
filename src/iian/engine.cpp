@@ -29,14 +29,14 @@ struct Engine::GraphState {
     struct Key { uint32_t n_tokens = 0, n_outputs = 0, n_kv = 0, kv_start = 0; bool paged = false; bool valid = false; uint64_t layout = 0; } key;
     uint64_t n_reused = 0, n_built = 0;
     // IIAN_PROFILE=1: per-phase step timings (microseconds), reported every 500 steps and at shutdown
-    struct Prof { bool on = false; uint64_t steps = 0, tokens = 0, us_sched = 0, us_batch = 0, us_build = 0, us_inputs = 0, us_compute = 0, us_outputs = 0; } prof;
+    struct Prof { bool on = false; uint64_t steps = 0, tokens = 0, us_sched = 0, us_batch = 0, us_build = 0, us_inputs = 0, us_compute = 0, us_outputs = 0, us_sample = 0; } prof;
     ~GraphState() { if (ctx) ggml_free(ctx); }
     void report() const {
         if (!prof.on || prof.steps == 0) return;
         const double n = (double) prof.steps;
-        fprintf(stderr, "iian profile: %llu steps, %.1f tokens/step | per step: schedule %.0f us, batch %.0f us, graph build %.0f us (%llu builds, %llu reuses), inputs %.0f us, compute+logits %.0f us, sampling/outputs %.0f us\n",
+        fprintf(stderr, "iian profile: %llu steps, %.1f tokens/step | per step: schedule %.0f us, batch %.0f us, graph build %.0f us (%llu builds, %llu reuses), inputs %.0f us, compute+logits %.0f us, sampling/outputs %.0f us (sampler %.0f us)\n",
                 (unsigned long long) prof.steps, prof.tokens / n, prof.us_sched / n, prof.us_batch / n, prof.us_build / n,
-                (unsigned long long) n_built, (unsigned long long) n_reused, prof.us_inputs / n, prof.us_compute / n, prof.us_outputs / n);
+                (unsigned long long) n_built, (unsigned long long) n_reused, prof.us_inputs / n, prof.us_compute / n, prof.us_outputs / n, prof.us_sample / n);
     }
 };
 
@@ -524,7 +524,8 @@ bool Engine::step() {
 
     // ---- fetch logits ----
     const uint32_t n_vocab = model_->hparams().n_vocab;
-    std::vector<float> logits((size_t) g.ub.n_outputs * n_vocab);
+    std::vector<float> & logits = logits_buf_;   // reused: a fresh >128 KiB vector per step would be mmap'd and page-faulted every time
+    logits.resize((size_t) g.ub.n_outputs * n_vocab);
     ggml_backend_tensor_get(g.gc->t_logits, logits.data(), 0, logits.size() * sizeof(float));
     ggml_backend_sched_synchronize(gsched_);
     const int64_t t1 = ggml_time_us();
@@ -549,11 +550,10 @@ bool Engine::step() {
     return true;
 }
 
-void Engine::process_outputs(const SchedulerOutput & so, const std::vector<float> & logits_all, const std::vector<int32_t> & logit_rows) {
+void Engine::process_outputs(const SchedulerOutput & so, std::vector<float> & logits_all, const std::vector<int32_t> & logit_rows) {
     const uint32_t n_vocab = model_->hparams().n_vocab;
     const Tokenizer & tok = model_->tokenizer();
     const auto now = std::chrono::steady_clock::now();
-    std::vector<float> scratch(n_vocab);
     uint64_t n_prompt_done = 0, n_gen = 0;
 
     for (size_t si = 0; si < so.scheduled.size(); si++) {
@@ -570,28 +570,33 @@ void Engine::process_outputs(const SchedulerOutput & so, const std::vector<float
         bool stop = false;
         FinishReason why = FinishReason::NONE;
         for (uint32_t k = 0; k <= n_spec && !stop; k++) {
-        memcpy(scratch.data(), logits_all.data() + (size_t) (logit_rows[si] + k) * n_vocab, n_vocab * sizeof(float));
+        // each output row is sampled exactly once, so the sampler works on it in place (no per-token copy)
+        float * scratch = logits_all.data() + (size_t) (logit_rows[si] + k) * n_vocab;
         // min_tokens: forbid EOS / stop tokens
         if ((int32_t) r->n_output() < p.min_tokens) {
             for (uint32_t t = 0; t < n_vocab; t++) if (tok.is_eog((token_t) t)) scratch[t] = -INFINITY;
             for (auto t : p.stop_token_ids) scratch[t] = -INFINITY;
         }
-        std::vector<token_t> prompt_view(r->tokens.begin(), r->tokens.begin() + r->n_prompt);
-        std::vector<token_t> output_view(r->tokens.begin() + r->n_prompt, r->tokens.end());
+        const token_t * prompt_view = r->tokens.data();
+        const size_t    n_prompt    = r->n_prompt;
+        const token_t * output_view = r->tokens.data() + r->n_prompt;
+        const size_t    n_output    = r->tokens.size() - r->n_prompt;
         SampledToken st;
+        const int64_t t_s0 = graph_->prof.on ? ggml_time_us() : 0;
         if (r->grammar) {
             // llama.cpp strategy: sample first and only pay for the full-vocabulary grammar mask when the
             // sampled token is not acceptable
-            std::vector<float> backup(scratch);
-            st = r->sampler.sample(scratch.data(), (int32_t) n_vocab, prompt_view, output_view);
+            std::vector<float> backup(scratch, scratch + n_vocab);
+            st = r->sampler.sample(scratch, (int32_t) n_vocab, prompt_view, n_prompt, output_view, n_output);
             if (!llama_grammar_would_accept(*r->grammar, st.token)) {
                 llama_grammar_apply_impl(*r->grammar, backup.data(), (int32_t) n_vocab);
-                st = r->sampler.sample(backup.data(), (int32_t) n_vocab, prompt_view, output_view);
+                st = r->sampler.sample(backup.data(), (int32_t) n_vocab, prompt_view, n_prompt, output_view, n_output);
             }
             llama_grammar_accept_impl(*r->grammar, st.token);
         } else {
-            st = r->sampler.sample(scratch.data(), (int32_t) n_vocab, prompt_view, output_view);
+            st = r->sampler.sample(scratch, (int32_t) n_vocab, prompt_view, n_prompt, output_view, n_output);
         }
+        if (graph_->prof.on) graph_->prof.us_sample += ggml_time_us() - t_s0;
         // speculative verification: the sample at a draft position is kept only if it equals the draft;
         // a mismatch ends the step (the sampled token is the recovered token)
         const bool verifying = k < n_spec;

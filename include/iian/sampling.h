@@ -7,6 +7,7 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace iian {
@@ -61,13 +62,16 @@ public:
     SamplerState() = default;
     explicit SamplerState(const SamplingParams & p, uint64_t default_seed);
     // Sample one token from logits[n_vocab] (logits are modified in place as scratch).
-    SampledToken sample(float * logits, int32_t n_vocab, const std::vector<token_t> & prompt, const std::vector<token_t> & output);
+    // prompt/output token views (penalties, bad words); logits are modified in place
+    SampledToken sample(float * logits, int32_t n_vocab, const token_t * prompt, size_t n_prompt, const token_t * output, size_t n_output);
     const SamplingParams & params() const { return params_; }
 private:
     SamplingParams params_;
     std::mt19937_64 rng_;
     std::vector<int32_t> ids_;      // scratch: candidate ids
     std::vector<float> probs_;      // scratch
+    std::vector<float> raw_, exp_;  // scratch: raw logits (logprobs), exp(logit - max) over the row
+    std::vector<std::pair<int32_t, float>> topk_;   // scratch: top-k logprobs
 };
 
 } // namespace iian

@@ -93,7 +93,7 @@ public:
 private:
     struct GraphState;
     void run_loop();
-    void process_outputs(const SchedulerOutput & so, const std::vector<float> & logits, const std::vector<int32_t> & logit_rows);
+    void process_outputs(const SchedulerOutput & so, std::vector<float> & logits, const std::vector<int32_t> & logit_rows);   // logits rows are consumed in place
     std::vector<token_t> ngram_draft(const std::vector<token_t> & toks) const;
     void process_embeddings(const SchedulerOutput & so, const std::vector<std::pair<int32_t, int32_t>> & embd_rows);
     void finish(Request * r, RequestStatus st, FinishReason why, const std::string & err = "");
@@ -112,6 +112,7 @@ private:
     size_t max_nodes_ = 0;
     bool paged_attn_ = false;
     bool gather_attn_ = false;
+    std::vector<float> logits_buf_;   // per-step logits, kept allocated across steps (rows are sampled in place)
     bool dump_tensors_ = false;
     bool profile_ops_ = false;
     std::unique_ptr<DraftModel> draft_;

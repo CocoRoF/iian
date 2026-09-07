@@ -284,8 +284,24 @@ std::unique_ptr<Model> ModelLoader::load_metadata(const std::string & path) {
     return m;
 }
 
+// ggml's own messages (backend init, CUDA graph warmup/reuse, ...) go through iian's logger under the "ggml" tag one
+// level down (ggml INFO -> iian DEBUG), so default output only shows iian's summaries; ggml may emit a line in fragments.
+static void ggml_log_to_iian(ggml_log_level level, const char * text, void *) {
+    std::string line(text ? text : "");
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+    if (line.empty()) return;
+    switch (level) {
+        case GGML_LOG_LEVEL_ERROR: LOG_ERR("ggml", "%s", line.c_str()); break;
+        case GGML_LOG_LEVEL_WARN:  LOG_WRN("ggml", "%s", line.c_str()); break;
+        case GGML_LOG_LEVEL_INFO:  LOG_DBG("ggml", "%s", line.c_str()); break;
+        default:                   LOG_TRC("ggml", "%s", line.c_str()); break;
+    }
+}
+
 std::unique_ptr<Model> ModelLoader::load(const std::string & path, const DeviceConfig & cfg, ProgressCallback progress) {
     register_builtin_archs();
+    static const bool log_installed = [] { ggml_log_set(ggml_log_to_iian, nullptr); return true; }();
+    (void) log_installed;
     ggml_backend_load_all();
 
     const int64_t t0 = ggml_time_us();

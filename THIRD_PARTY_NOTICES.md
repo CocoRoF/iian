@@ -26,3 +26,6 @@ No vLLM source code is included. The following components re-implement algorithm
 conventions documented in vLLM v1 (scheduler, KV cache manager / block pool / prefix caching, request
 lifecycle, sampler semantics, OpenAI protocol shapes, metric names): `src/iian/scheduler.cpp`,
 `src/iian/kv_cache.cpp`, `src/iian/engine.cpp`, `src/iian/sampler.cpp`, `src/iian/server/`.
+
+- `src/iian/vec_math.h`: the AVX2 `expf8` routine is adapted from ggml's `ggml-cpu/vec.h` (`ggml_v_expf`), itself
+  adapted from the Arm Limited optimized routines (MIT).

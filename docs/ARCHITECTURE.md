@@ -104,11 +104,27 @@ LIFO for uncached blocks).
 kernel, a ggml custom op that receives the batch's per-sequence cell lists (block tables) and, for every
 (query token, head) pair, computes a two-pass softmax over that sequence's own cells only:
 `O(sum of context lengths)`. F16/F32 K/V, GQA, sliding window, logit softcap; AVX2+F16C SIMD dot/axpy with a
-scalar fallback. The engine picks it per step (`EngineConfig::attention = auto|masked|paged`): tiny decode
-batches on models with few heads (`n_tokens x n_head < 2 x threads`) stay on ggml's fused kernel, everything
-else goes paged; the choice is part of the graph-reuse key. Numerically it sits within the spread of ggml's
-own two attention paths (see `docs/models.md`). GPU backends still use the masked path until a CUDA/Metal
-kernel lands; both paths live behind `GraphContext::build_attn()`, so architecture code never changes.
+scalar fallback. The engine picks it per step: tiny decode batches on models with few heads
+(`n_tokens x n_head < 2 x threads`) stay on ggml's fused kernel, everything else goes paged; the choice is
+part of the graph-reuse key. Numerically it sits within the spread of ggml's own two attention paths (see
+`docs/models.md`).
+
+**Gathered batched flash attention** (`GraphContext::build_attn_gather`, the default on GPUs, any backend).
+Instead of a custom kernel, the paged layout is turned into the layout ggml's fused flash attention already
+handles well: sequences of a batch are grouped by their token count `T`; for each group the cells of every
+sequence are gathered with `ggml_get_rows` (raw row copies viewed as I32 for f16/bf16 caches, dequantised
+for quantized caches) into a contiguous `[L, S]` buffer, `L` being the longest context in the group padded to
+256, and one 4-D `ggml_flash_attn_ext` call attends `q [hd, T, n_head, S]` against `k/v [hd, L, n_head_kv, S]`
+with a per-sequence causal mask `[L, T, 1, S]`. A sequence never sees another sequence's cells, so the cost is
+`O(sum of context lengths)` like the paged kernel, and the gather copies are cheap next to the weights
+(a few MiB per layer). The engine orders scheduled sequences by token count so groups are contiguous token
+ranges of the batch, and the group layout is part of the graph-reuse key. On CUDA the vendored ggml carries a
+one-line patch so the vector flash-attention kernel also serves batched single-query groups
+(`GGML_CUDA_FA_VEC_BATCHED=0` restores upstream's choice); CPU outputs are bit-identical to the masked path.
+
+`EngineConfig::attention = auto|masked|paged|gather` (`--attention`): `auto` is `paged` on CPU-only runs
+and `gather` when a GPU holds the KV cache. All three paths live behind `GraphContext::build_attn()`, so
+architecture code never changes.
 
 ## Scheduler
 

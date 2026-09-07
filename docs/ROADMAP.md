@@ -26,11 +26,14 @@ Status legend: ✅ done · 🚧 in progress · ⬜ planned
 ## Phase 2 — performance
 - ✅ **paged attention kernel** (CPU, `src/iian/paged_attn.cpp`): ggml custom op walking per-sequence block tables,
   O(sum of sequence lengths); AVX2/F16C SIMD; auto-selected on CPU-only runs (`--attention auto|masked|paged`)
-- ⬜ paged attention for CUDA/Metal backends
+- ✅ **GPU attention**: gathered per-sequence batched flash attention (`--attention gather`, the GPU default): KV cells
+  gathered per sequence group and attended with one batched `flash_attn_ext`, O(sum of context lengths) on any backend
+  (verified on RTX 5090: batched decode ahead of llama.cpp from concurrency 8 up); ⬜ native paged-attention CUDA kernel
 - ✅ speculative decoding: n-gram/prompt-lookup drafts (`--spec-ngram N`, exact one-hot rejection sampling, greedy output unchanged); ✅ draft-model drafts (`--spec-draft small.gguf`, batched draft KV; 89% acceptance with a Q8 SmolLM2 draft for the F16 target, output bit-identical)
 - ⬜ sliding-window KV eviction (free out-of-window blocks, like vLLM's SlidingWindowManager)
-- ⬜ quantized KV cache validation on GPU backends (q8_0/q4_0 K/V already selectable)
-- ⬜ CUDA graphs for steady-state decode; pipeline parallel across GPUs (ggml sched supports it)
+- ✅ quantized KV cache validated on CUDA (q8_0 batching suite, q4_0 generation; `scripts/gpu-test.sh`)
+- 🚧 CUDA graphs for steady-state decode (ggml's graph capture, enabled in the build); ⬜ pipeline parallel across GPUs (ggml sched supports it)
+- ✅ regex-constrained output (`guided_regex`, `structured_outputs.regex`, `--regex`)
 - ⬜ prefill/decode budget tuning, long-prefill threshold defaults per device
 - ⬜ benchmark suite (`iian bench`, serving benchmark vs llama-server and vLLM)
 
