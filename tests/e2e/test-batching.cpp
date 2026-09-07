@@ -30,20 +30,35 @@ static std::vector<token_t> collect(Engine::Handle & h, std::string & text, uint
     return toks;
 }
 
-// On a mismatch, show where the two runs diverge and how close the top-2 logits were there:
-// a gap of a few 1e-2 nats is backend numerics (e.g. CUDA flash-attention tile shapes), a large gap is a bug.
-static void explain_divergence(const Tokenizer & tok, const std::vector<token_t> & a, const std::vector<SampledToken> & lpa,
-                               const std::vector<token_t> & b, const std::vector<SampledToken> & lpb) {
+// Two greedy runs of the same request must agree token for token. The one tolerated exception is a *near tie*:
+// GPU backends pick different matmul/attention kernels depending on the batch shape (a 47-token prefill vs a
+// 15-token suffix on a cached prefix), and their rounding differs by ~1e-2 nats, so when the top-2 candidates
+// are within NEAR_TIE nats of each other in both runs and each run's choice is the other's runner-up, the flip
+// is numerics rather than a bug (everything after the flip legitimately differs). Anything else is a failure.
+static constexpr float NEAR_TIE = 0.1f;
+
+static bool near_tie_at(const std::vector<SampledToken> & lp, size_t i, token_t other) {
+    if (i >= lp.size() || lp[i].top.size() < 2) return false;
+    const float gap = lp[i].top[0].logprob - lp[i].top[1].logprob;
+    return gap >= 0.0f && gap < NEAR_TIE && (lp[i].top[0].token == other || lp[i].top[1].token == other);
+}
+
+// returns true when the outputs are equal or differ only by a near tie; prints an explanation otherwise
+static bool same_output(const Tokenizer & tok, const char * what, const std::vector<token_t> & ref, const std::vector<SampledToken> & lpr,
+                        const std::vector<token_t> & got, const std::vector<SampledToken> & lpg) {
+    if (ref == got) return true;
     size_t i = 0;
-    while (i < a.size() && i < b.size() && a[i] == b[i]) i++;
-    printf("  first divergence at output token %zu:\n", i);
+    while (i < ref.size() && i < got.size() && ref[i] == got[i]) i++;
     auto show = [&](const char * tag, const std::vector<SampledToken> & lp) {
         if (i >= lp.size()) { printf("    %s: (no logprobs)\n", tag); return; }
         printf("    %s: sampled %d '%s' logprob %.4f; top:", tag, lp[i].token, tok.token_to_piece(lp[i].token, true).c_str(), lp[i].logprob);
         for (const auto & t : lp[i].top) printf(" %d('%s')=%.4f", t.token, tok.token_to_piece(t.token, true).c_str(), t.logprob);
         printf("\n");
     };
-    show("ref", lpa); show("got", lpb);
+    const bool tie = i < ref.size() && i < got.size() && near_tie_at(lpr, i, got[i]) && near_tie_at(lpg, i, ref[i]);
+    printf("%s %s: outputs diverge at token %zu (%s)\n", tie ? "  note" : "FAIL", what, i, tie ? "near tie, backend numerics" : "NOT a near tie");
+    show("ref", lpr); show("got", lpg);
+    return tie;
 }
 
 int main(int argc, char ** argv) {
@@ -66,19 +81,19 @@ int main(int argc, char ** argv) {
         "The quick brown fox",
     };
     const int n_gen = 24;
-    SamplingParams sp; sp.temperature = 0.0f; sp.max_tokens = n_gen;
-    const SamplingParams sp_base = sp;
+    SamplingParams sp; sp.temperature = 0.0f; sp.max_tokens = n_gen; sp.logprobs = 2;   // top-2 logprobs explain any divergence
     int failures = 0;
 
     // ---- 1. sequential reference (no batching, no prefix cache) ----
     std::map<std::string, std::vector<token_t>> ref;
+    std::map<std::string, std::vector<SampledToken>> ref_lp;
     {
         EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.enable_prefix_caching = false; ec.sched.max_num_seqs = 1; ec.max_model_len = 512;
         Engine eng(model, ec); eng.start();
         for (auto & p : prompts) {
             auto h = eng.submit(tok.encode(p, true, true), sp);
             std::string text, err; uint32_t cached = 0;
-            ref[p] = collect(h, text, cached, err);
+            ref[p] = collect(h, text, cached, err); ref_lp[p] = g_last_lp;
             if (!err.empty()) { printf("FAIL ref %s: %s\n", p.c_str(), err.c_str()); failures++; }
         }
         eng.stop();
@@ -96,7 +111,7 @@ int main(int argc, char ** argv) {
         for (size_t i = 0; i < prompts.size(); i++) {
             std::string text, err; uint32_t cached = 0;
             auto got = collect(hs[i], text, cached, err);
-            if (got != ref[prompts[i]]) { printf("FAIL batched mismatch for '%s'\n  got: %s\n", prompts[i].c_str(), text.c_str()); bad++; }
+            if (!same_output(tok, "batched", ref[prompts[i]], ref_lp[prompts[i]], got, g_last_lp)) { printf("  prompt '%s'\n  got: %s\n", prompts[i].c_str(), text.c_str()); bad++; }
         }
         failures += bad;
         eng.stop();
@@ -107,7 +122,6 @@ int main(int argc, char ** argv) {
     {
         EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.sched.max_num_seqs = 4; ec.max_model_len = 1024; ec.block_size = 16;
         Engine eng(model, ec); eng.start();
-        SamplingParams sp = sp_base; sp.logprobs = 2;   // top-2 logprobs let a mismatch be explained (near-tie vs bug)
         std::string longp = "This is a long shared system prompt that should be cached across requests. It talks about many things, including the weather, the economy, and cats. ";
         for (int i = 0; i < 3; i++) longp += "Repeat " + std::to_string(i) + ". ";
         std::string p1 = longp + "The capital of France is";
@@ -129,14 +143,9 @@ int main(int argc, char ** argv) {
         if (c1 != 0) { printf("FAIL: first request should have 0 cached tokens\n"); failures++; }
         if (c2 == 0 || c2 + 16 <= (uint32_t) ta.size() - 16) { printf("FAIL: second identical request should hit the cache (got %u of %zu)\n", c2, ta.size()); failures++; }
         if (c3 == 0) { printf("FAIL: shared prefix should hit the cache\n"); failures++; }
-        if (r1 != rr || r2 != rr) {
-            printf("FAIL: cached outputs differ from reference\n  ref: %s\n  r1: %s\n  r2: %s\n", tr.c_str(), t1.c_str(), t2.c_str()); failures++;
-            explain_divergence(tok, rr, lpr, r1 != rr ? r1 : r2, r1 != rr ? lp1 : lp2);
-        }
-        if (r3 != rr3) {
-            printf("FAIL: shared-prefix output differs from reference\n  ref: %s\n  got: %s\n", tr3.c_str(), t3.c_str()); failures++;
-            explain_divergence(tok, rr3, lpr3, r3, lp3);
-        }
+        if (!same_output(tok, "cached run 1", rr, lpr, r1, lp1)) { printf("  ref: %s\n  got: %s\n", tr.c_str(), t1.c_str()); failures++; }
+        if (!same_output(tok, "cached run 2", rr, lpr, r2, lp2)) { printf("  ref: %s\n  got: %s\n", tr.c_str(), t2.c_str()); failures++; }
+        if (!same_output(tok, "shared-prefix run", rr3, lpr3, r3, lp3)) { printf("  ref: %s\n  got: %s\n", tr3.c_str(), t3.c_str()); failures++; }
         eng.stop();
     }
 
@@ -154,10 +163,10 @@ int main(int argc, char ** argv) {
         int bad = 0;
         for (size_t i = 0; i < prompts.size(); i++) {
             std::string text, err; uint32_t cached = 0;
-            auto got = collect(hs[i], text, cached, err);
+            auto got = collect(hs[i], text, cached, err); auto lpg = g_last_lp;
             auto hr = engr.submit(tok.encode(prompts[i], true, true), sp2);
             std::string tr, er; uint32_t cr = 0; auto r = collect(hr, tr, cr, er);
-            if (got != r || !err.empty()) { bad++; printf("  mismatch '%s': %s\n   ref: %s\n", prompts[i].c_str(), err.empty() ? text.c_str() : err.c_str(), tr.c_str()); }
+            if (!err.empty() || !same_output(tok, "preempted", r, g_last_lp, got, lpg)) { bad++; printf("  mismatch '%s': %s\n   ref: %s\n", prompts[i].c_str(), err.empty() ? text.c_str() : err.c_str(), tr.c_str()); }
         }
         auto st = eng.stats();
         printf("[4] preemption (256-cell cache, 8 x 40-token requests): preemptions=%llu mismatches=%d %s\n",
