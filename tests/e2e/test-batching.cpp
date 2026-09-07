@@ -77,11 +77,13 @@ static bool same_output(const Tokenizer & tok, const char * what, const std::vec
 }
 
 int main(int argc, char ** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s model.gguf\n", argv[0]); return 1; }
+    if (argc < 2) { fprintf(stderr, "usage: %s model.gguf [attn auto|masked|paged] [spec_ngram] [draft.gguf|-] [kv f16|q8_0|q4_0]\n", argv[0]); return 1; }
     Logger::instance().set_level(LogLevel::WARN);
     const std::string attn = argc > 2 ? argv[2] : "auto";
     const uint32_t spec = argc > 3 ? (uint32_t) atoi(argv[3]) : 0;
-    const std::string draft = argc > 4 ? argv[4] : "";
+    std::string draft = argc > 4 ? argv[4] : "";
+    if (draft == "-") draft.clear();
+    const std::string kv_dtype = argc > 5 ? argv[5] : "f16";
     std::shared_ptr<Model> model = ModelLoader::load(argv[1], DeviceConfig{});
     const auto & tok = model->tokenizer();
 
@@ -103,7 +105,7 @@ int main(int argc, char ** argv) {
     std::map<std::string, std::vector<token_t>> ref;
     std::map<std::string, std::vector<SampledToken>> ref_lp;
     {
-        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.enable_prefix_caching = false; ec.sched.max_num_seqs = 1; ec.max_model_len = 512;
+        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.kv_dtype = kv_dtype; ec.enable_prefix_caching = false; ec.sched.max_num_seqs = 1; ec.max_model_len = 512;
         Engine eng(model, ec); eng.start();
         for (auto & p : prompts) {
             auto h = eng.submit(tok.encode(p, true, true), sp);
@@ -117,7 +119,7 @@ int main(int argc, char ** argv) {
 
     // ---- 2. all prompts concurrently (continuous batching, chunked prefill with small budget) ----
     {
-        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.sched.max_num_seqs = 8; ec.sched.max_num_batched_tokens = 7; ec.max_model_len = 512;
+        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.kv_dtype = kv_dtype; ec.sched.max_num_seqs = 8; ec.sched.max_num_batched_tokens = 7; ec.max_model_len = 512;
         Engine eng(model, ec);
         std::vector<Engine::Handle> hs;
         for (auto & p : prompts) hs.push_back(eng.submit(tok.encode(p, true, true), sp));
@@ -135,7 +137,7 @@ int main(int argc, char ** argv) {
 
     // ---- 3. prefix caching: same prompt twice + shared long prefix ----
     {
-        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.sched.max_num_seqs = 4; ec.max_model_len = 1024; ec.block_size = 16;
+        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.kv_dtype = kv_dtype; ec.sched.max_num_seqs = 4; ec.max_model_len = 1024; ec.block_size = 16;
         Engine eng(model, ec); eng.start();
         std::string longp = "This is a long shared system prompt that should be cached across requests. It talks about many things, including the weather, the economy, and cats. ";
         for (int i = 0; i < 3; i++) longp += "Repeat " + std::to_string(i) + ". ";
@@ -166,14 +168,14 @@ int main(int argc, char ** argv) {
 
     // ---- 4. preemption: KV cache too small for all requests at once ----
     {
-        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.sched.max_num_seqs = 8; ec.max_model_len = 256; ec.kv_cache_tokens = 256; ec.block_size = 16;
+        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.kv_dtype = kv_dtype; ec.sched.max_num_seqs = 8; ec.max_model_len = 256; ec.kv_cache_tokens = 256; ec.block_size = 16;
         Engine eng(model, ec);
         std::vector<Engine::Handle> hs;
         SamplingParams sp2 = sp; sp2.max_tokens = 40;
         for (auto & p : prompts) hs.push_back(eng.submit(tok.encode(p, true, true), sp2));
         eng.start();
         // reference with plenty of memory
-        EngineConfig ecr; ecr.attention = attn; ecr.enable_prefix_caching = false; ecr.sched.max_num_seqs = 1; ecr.max_model_len = 256;
+        EngineConfig ecr; ecr.attention = attn; ecr.kv_dtype = kv_dtype; ecr.enable_prefix_caching = false; ecr.sched.max_num_seqs = 1; ecr.max_model_len = 256;
         Engine engr(model, ecr); engr.start();
         int bad = 0;
         for (size_t i = 0; i < prompts.size(); i++) {
@@ -195,7 +197,7 @@ int main(int argc, char ** argv) {
 
     // ---- 5. abort mid-generation + stop strings ----
     {
-        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.max_model_len = 512;
+        EngineConfig ec; ec.attention = attn; ec.spec_ngram = spec; ec.spec_draft_model = draft; ec.kv_dtype = kv_dtype; ec.max_model_len = 512;
         Engine eng(model, ec); eng.start();
         SamplingParams s3 = sp; s3.max_tokens = 200; s3.stop = {"."};
         auto h = eng.submit(tok.encode("The capital of France is", true, true), s3);

@@ -11,10 +11,10 @@
 #include <string>
 
 int main(int argc, char ** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s model.gguf [prompt] [n] [--temp T] [--threads N]\n", argv[0]); return 1; }
+    if (argc < 2) { fprintf(stderr, "usage: %s model.gguf [prompt] [n] [--temp T] [--threads N] [--attn auto|masked|paged] [--kv f16|q8_0|q4_0] [--ctx N]\n", argv[0]); return 1; }
     std::string prompt = argc > 2 ? argv[2] : "The capital of France is";
     int n = argc > 3 ? atoi(argv[3]) : 16;
-    float temp = 0.0f; int threads = -1; bool fa = true; std::string attn = "auto"; int spec = 0; std::string draft; int ctx = 0;
+    float temp = 0.0f; int threads = -1; bool fa = true; std::string attn = "auto"; int spec = 0; std::string draft; int ctx = 0; std::string kv_dtype = "f16";
     for (int i = 4; i < argc; i++) {
         if (!strcmp(argv[i], "--temp") && i + 1 < argc) temp = atof(argv[++i]);
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
@@ -23,6 +23,7 @@ int main(int argc, char ** argv) {
         else if (!strcmp(argv[i], "--spec") && i + 1 < argc) spec = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--draft") && i + 1 < argc) draft = argv[++i];
         else if (!strcmp(argv[i], "--ctx") && i + 1 < argc) ctx = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--kv") && i + 1 < argc) kv_dtype = argv[++i];
     }
     using namespace iian;
     DeviceConfig dc;
@@ -33,6 +34,7 @@ int main(int argc, char ** argv) {
     ec.attention = attn;
     ec.spec_ngram = (uint32_t) spec;
     ec.spec_draft_model = draft;
+    ec.kv_dtype = kv_dtype;
     if (ctx > 0) ec.max_model_len = (uint32_t) ctx;
     ec.sched.max_num_seqs = 4;
     ec.sched.max_num_batched_tokens = 512;
