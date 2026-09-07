@@ -1,8 +1,8 @@
 # GPU development workflow
 
-Code is edited locally and pushed to GitHub (`CocoRoF/iian`); builds and GPU tests run on the GPU server
-(2 x RTX 5090, CUDA 13.0, reached through a jump host), which pulls from GitHub with a read-only deploy key
-(`~/.ssh/iian_deploy`, SSH alias `github.com-iian`) into `~/iian`.
+Code is edited locally and pushed to the public GitHub repository `CocoRoF/iian`; builds and GPU tests run on
+the GPU server (2 x RTX 5090, CUDA 13.0, reached through a jump host), which pulls from GitHub over plain
+https into `~/iian` (no credentials or keys on the server).
 
 ```
 # local
