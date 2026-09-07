@@ -112,6 +112,7 @@ private:
     size_t max_nodes_ = 0;
     bool paged_attn_ = false;
     bool dump_tensors_ = false;
+    bool profile_ops_ = false;
     std::unique_ptr<DraftModel> draft_;
 
     // inbound queues

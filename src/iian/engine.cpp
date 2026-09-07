@@ -54,6 +54,31 @@ static ggml_type kv_type_from_string(const std::string & s) {
 
 // IIAN_DUMP_TENSORS=1: print name, shape and checksum of every graph node (debug aid to compare layer
 // outputs against llama.cpp's `llama-eval-callback`). Only F32/F16 tensors are summarised.
+// IIAN_PROFILE=ops: time every graph node (the scheduler synchronises after each node when a callback asks
+// for it) and report the heaviest ops at shutdown. Keys are "<op>:<tensor base name>" with the layer suffix stripped.
+struct OpProfile { double us = 0; uint64_t n = 0; };
+static std::map<std::string, OpProfile> g_op_prof;
+static int64_t g_op_t0 = 0;
+static bool profile_op_cb(ggml_tensor * t, bool ask, void *) {
+    if (ask) { g_op_t0 = ggml_time_us(); return true; }
+    std::string name = ggml_get_name(t);
+    size_t dash = name.rfind('-');
+    if (dash != std::string::npos && dash + 1 < name.size() && std::all_of(name.begin() + dash + 1, name.end(), ::isdigit)) name.resize(dash);
+    auto & e = g_op_prof[std::string(ggml_op_name(t->op)) + ":" + name];
+    e.us += (double) (ggml_time_us() - g_op_t0); e.n++;
+    return true;
+}
+static void report_op_profile() {
+    if (g_op_prof.empty()) return;
+    std::vector<std::pair<std::string, OpProfile>> v(g_op_prof.begin(), g_op_prof.end());
+    std::sort(v.begin(), v.end(), [](auto & a, auto & b) { return a.second.us > b.second.us; });
+    double total = 0; for (auto & e : v) total += e.second.us;
+    fprintf(stderr, "iian op profile (per-node synchronised, %.1f ms total):\n", total / 1000.0);
+    for (size_t i = 0; i < v.size() && i < 20; i++)
+        fprintf(stderr, "  %5.1f%%  %9.1f ms  %8llu calls  %6.1f us/call  %s\n", 100.0 * v[i].second.us / total, v[i].second.us / 1000.0,
+                (unsigned long long) v[i].second.n, v[i].second.us / v[i].second.n, v[i].first.c_str());
+}
+
 static bool dump_tensor_cb(ggml_tensor * t, bool ask, void *) {
     if (ask) return true;
     if (t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_F16) return true;
@@ -138,6 +163,7 @@ Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(
     gsched_ = ggml_backend_sched_new(backends_.data(), bufts.data(), (int) backends_.size(), max_nodes_, false, true);
     graph_ = std::make_unique<GraphState>();
     graph_->prof.on = getenv("IIAN_PROFILE") != nullptr;
+    profile_ops_ = getenv("IIAN_PROFILE") && std::string(getenv("IIAN_PROFILE")) == "ops";
     graph_->meta.resize(ggml_tensor_overhead() * max_nodes_ + ggml_graph_overhead_custom(max_nodes_, false));
 
     // attention path: iian's paged kernel is a CPU custom op; use it when everything runs on the CPU
@@ -198,6 +224,7 @@ void Engine::stop() {
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
     if (graph_) graph_->report();
+    if (profile_ops_) report_op_profile();
     // abort everything left
     for (Request * r : sched_->all_requests()) finish(r, RequestStatus::FINISHED_ABORTED, FinishReason::ABORT, "engine shutting down");
 }
@@ -483,6 +510,7 @@ bool Engine::step() {
         }, nullptr);
     }
     if (dump_tensors_) ggml_backend_sched_set_eval_callback(gsched_, dump_tensor_cb, nullptr);
+    else if (profile_ops_) ggml_backend_sched_set_eval_callback(gsched_, profile_op_cb, nullptr);
     ggml_status st = ggml_backend_sched_graph_compute(gsched_, g.gf);
     if (st != GGML_STATUS_SUCCESS) throw std::runtime_error("graph compute failed with status " + std::to_string((int) st));
 

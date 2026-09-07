@@ -125,6 +125,7 @@ private:
     ggml_tensor * build_attn_mha(ggml_tensor * q, ggml_tensor * k, ggml_tensor * v, ggml_tensor * kq_mask, float kq_scale, int il);
     bool has_swa_layers() const;
     void fill_kq_mask(ggml_tensor * mask, bool swa) const;
+    mutable std::vector<uint8_t> mask_scratch_;   // host staging buffer for the mask (reused across steps)
 };
 
 } // namespace iian

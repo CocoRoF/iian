@@ -367,29 +367,31 @@ void GraphContext::set_inputs() {
 void GraphContext::fill_kq_mask(ggml_tensor * mask, bool swa) const {
     const int64_t n_kv = ub.n_kv;
     const bool f16 = mask->type == GGML_TYPE_F16;
-    // build the whole [n_kv, n_tokens] mask on the host and upload it once (per-row uploads are far too
-    // slow for GPU buffers)
-    std::vector<float> full((size_t) n_kv * ub.n_tokens, -INFINITY);
+    // build the whole [n_kv, n_tokens] mask on the host in the tensor's own type and upload it once
+    // (per-row uploads are far too slow for GPU buffers; a float intermediate + conversion doubled the cost)
+    const size_t n = (size_t) n_kv * ub.n_tokens;
+    const ggml_fp16_t neg_inf16 = ggml_fp32_to_fp16(-INFINITY);
+    auto & buf = mask_scratch_;
+    buf.resize(n * (f16 ? sizeof(ggml_fp16_t) : sizeof(float)));
+    if (f16) std::fill_n((ggml_fp16_t *) buf.data(), n, neg_inf16);
+    else     std::fill_n((float *) buf.data(), n, -INFINITY);
     for (uint32_t i = 0; i < ub.n_tokens; i++) {
-        float * row = full.data() + (size_t) i * n_kv;
         const auto & s = ub.seqs[ub.seq_idx[i]];
         const pos_t p1 = ub.pos[i];
+        ggml_fp16_t * row16 = f16 ? (ggml_fp16_t *) buf.data() + (size_t) i * n_kv : nullptr;
+        float       * row32 = f16 ? nullptr : (float *) buf.data() + (size_t) i * n_kv;
         for (size_t c = 0; c < s.cells.size(); c++) {
             if (!hp.causal_attn || s.cell_pos[c] <= p1) {
                 // ref: llama_hparams::is_masked_swa (LLAMA_SWA_TYPE_STANDARD): masked when p1 - p0 >= n_swa
                 if (swa && p1 - s.cell_pos[c] >= (pos_t) hp.n_swa) continue;
                 const int64_t j = s.cells[c] - ub.kv_start;
-                if (j >= 0 && j < n_kv) row[j] = hp.f_max_alibi_bias > 0.0f ? -(float) std::abs(p1 - s.cell_pos[c]) : 0.0f;
+                if (j < 0 || j >= n_kv) continue;
+                const float v = hp.f_max_alibi_bias > 0.0f ? -(float) std::abs(p1 - s.cell_pos[c]) : 0.0f;
+                if (f16) row16[j] = ggml_fp32_to_fp16(v); else row32[j] = v;
             }
         }
     }
-    if (f16) {
-        std::vector<ggml_fp16_t> full16(full.size());
-        ggml_fp32_to_fp16_row(full.data(), full16.data(), (int64_t) full.size());
-        ggml_backend_tensor_set(mask, full16.data(), 0, full16.size() * sizeof(ggml_fp16_t));
-    } else {
-        ggml_backend_tensor_set(mask, full.data(), 0, full.size() * sizeof(float));
-    }
+    ggml_backend_tensor_set(mask, buf.data(), 0, buf.size());
 }
 
 } // namespace iian
