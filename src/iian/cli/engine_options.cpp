@@ -31,7 +31,7 @@ void add_engine_flags(ArgParser & p) {
     p.add("--block-size", "KV cache block size in tokens (prefix-cache granularity)", "N", "16");
     p.add("--no-prefix-caching", "Disable automatic prefix caching");
     p.add("--no-flash-attn", "Disable flash attention");
-    p.add("--attention", "auto | masked | paged (paged = iian kernel, CPU only; auto picks per step)", "MODE", "auto");
+    p.add("--attention", "auto | masked | paged | gather (auto: paged kernel on CPU, gather = per-sequence batched flash attention on GPU)", "MODE", "auto");
     p.add("--seed", "Base RNG seed for sampling (0 = per-request random)", "N", "0");
     p.add("--spec-ngram", "Speculative decoding via prompt lookup: draft tokens per step (0 = off; try 4)", "N", "0");
     p.add("--spec-draft", "Speculative decoding with a draft model (GGUF path / cached name; same tokenizer as the target)", "MODEL");

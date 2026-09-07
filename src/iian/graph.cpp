@@ -6,6 +6,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -21,8 +22,8 @@ static int rope_mode_of(RopeType t) {
     }
 }
 
-GraphContext::GraphContext(ggml_context * ctx, ggml_cgraph * gf_, const Model & model_, const UBatch & ub_, PagedKVCache & kv_, bool fa, bool paged)
-    : ctx0(ctx), gf(gf_), model(model_), hp(model_.hparams()), ub(ub_), kv(kv_), flash_attn(fa), paged_attn(paged),
+GraphContext::GraphContext(ggml_context * ctx, ggml_cgraph * gf_, const Model & model_, const UBatch & ub_, PagedKVCache & kv_, bool fa, bool paged, bool gather)
+    : ctx0(ctx), gf(gf_), model(model_), hp(model_.hparams()), ub(ub_), kv(kv_), flash_attn(fa), paged_attn(paged), gather_attn(gather),
       n_embd(hp.n_embd), n_layer(hp.n_layer), n_tokens(ub_.n_tokens), n_outputs(ub_.n_outputs), n_rot(hp.n_rot),
       n_ctx_orig(hp.n_ctx_orig_yarn), freq_base(hp.rope_freq_base), freq_scale(hp.rope_freq_scale),
       ext_factor(hp.yarn_ext_factor), attn_factor(hp.yarn_attn_factor), beta_fast(hp.yarn_beta_fast), beta_slow(hp.yarn_beta_slow),
@@ -64,6 +65,24 @@ void GraphContext::build_attn_inputs() {
     ggml_set_input(inp_k_idxs);
     inp_v_idxs = inp_k_idxs;   // same cell for K and V (non-transposed V)
     if (paged_attn) return;    // the paged kernel walks block tables directly: no masks needed
+    if (gather_attn) {
+        groups = attn_groups(ub);
+        const bool swa_layers = hp.n_swa > 0 && has_swa_layers();
+        for (size_t gi = 0; gi < groups.size(); gi++) {
+            const AttnGroup & g = groups[gi];
+            ggml_tensor * idx = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, (int64_t) g.L * g.S);
+            ggml_format_name(idx, "inp_gather_idx_%zu", gi); ggml_set_input(idx);
+            ggml_tensor * mk = ggml_new_tensor_4d(ctx0, GGML_TYPE_F16, g.L, g.T, 1, g.S);
+            ggml_format_name(mk, "inp_gmask_%zu", gi); ggml_set_input(mk);
+            inp_gather_idx.push_back(idx); inp_gmask.push_back(mk);
+            if (swa_layers) {
+                ggml_tensor * ms = ggml_new_tensor_4d(ctx0, GGML_TYPE_F16, g.L, g.T, 1, g.S);
+                ggml_format_name(ms, "inp_gmask_swa_%zu", gi); ggml_set_input(ms);
+                inp_gmask_swa.push_back(ms);
+            }
+        }
+        return;
+    }
     const ggml_type mask_type = flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32;
     inp_kq_mask = ggml_new_tensor_2d(ctx0, mask_type, ub.n_kv, n_tokens);
     ggml_set_name(inp_kq_mask, "inp_kq_mask");
@@ -318,10 +337,15 @@ ggml_tensor * GraphContext::build_attn(ggml_tensor * wo, ggml_tensor * bo, ggml_
         }
     }
 
-    ggml_tensor * kc = kv.k_view(ctx0, il, ub.kv_start, ub.n_kv);
-    ggml_tensor * vc = kv.v_view(ctx0, il, ub.kv_start, ub.n_kv);
-    ggml_tensor * kq_mask = (inp_kq_mask_swa && hp.is_swa[il]) ? inp_kq_mask_swa : inp_kq_mask;
-    ggml_tensor * cur = build_attn_mha(q, kc, vc, kq_mask, kq_scale, il);
+    ggml_tensor * cur;
+    if (gather_attn) {
+        cur = build_attn_gather(q, kq_scale, il);
+    } else {
+        ggml_tensor * kc = kv.k_view(ctx0, il, ub.kv_start, ub.n_kv);
+        ggml_tensor * vc = kv.v_view(ctx0, il, ub.kv_start, ub.n_kv);
+        ggml_tensor * kq_mask = (inp_kq_mask_swa && hp.is_swa[il]) ? inp_kq_mask_swa : inp_kq_mask;
+        cur = build_attn_mha(q, kc, vc, kq_mask, kq_scale, il);
+    }
     cb(cur, "kqv_out", il);
 
     if (wo) { cur = ggml_mul_mat(ctx0, wo, cur); cb(cur, "attn_wo", il); }
@@ -362,6 +386,134 @@ void GraphContext::set_inputs() {
     // main mask plus the window-restricted inp_kq_mask_swa for their SWA layers.
     if (inp_kq_mask)     fill_kq_mask(inp_kq_mask, hp.n_swa > 0 && inp_kq_mask_swa == nullptr);
     if (inp_kq_mask_swa) fill_kq_mask(inp_kq_mask_swa, true);
+    for (size_t gi = 0; gi < groups.size(); gi++) {
+        const AttnGroup & g = groups[gi];
+        std::vector<int32_t> idx((size_t) g.L * g.S);
+        for (uint32_t si = 0; si < g.S; si++) {
+            const auto & sq = ub.seqs[g.seqs[si]];
+            for (uint32_t j = 0; j < g.L; j++) idx[(size_t) si * g.L + j] = (int32_t) (j < sq.cells.size() ? sq.cells[j] : sq.cells[0]);
+        }
+        ggml_backend_tensor_set(inp_gather_idx[gi], idx.data(), 0, idx.size() * sizeof(int32_t));
+        fill_gather_mask(inp_gmask[gi], g, hp.n_swa > 0 && inp_gmask_swa.empty());
+        if (!inp_gmask_swa.empty()) fill_gather_mask(inp_gmask_swa[gi], g, true);
+    }
+}
+
+void GraphContext::fill_gather_mask(ggml_tensor * mask, const AttnGroup & g, bool swa) const {
+    // [L, T, 1, S]: row (s, t) masks the gathered cells of sequence s for its t-th batch token
+    const ggml_fp16_t neg_inf16 = ggml_fp32_to_fp16(-INFINITY);
+    const ggml_fp16_t zero16 = ggml_fp32_to_fp16(0.0f);
+    auto & buf = mask_scratch_;
+    const size_t n = (size_t) g.L * g.T * g.S;
+    buf.resize(n * sizeof(ggml_fp16_t));
+    ggml_fp16_t * m = (ggml_fp16_t *) buf.data();
+    std::fill_n(m, n, neg_inf16);
+    for (uint32_t si = 0; si < g.S; si++) {
+        const auto & sq = ub.seqs[g.seqs[si]];
+        for (uint32_t t = 0; t < g.T; t++) {
+            const pos_t p1 = ub.pos[g.tok0 + (size_t) si * g.T + t];
+            ggml_fp16_t * row = m + ((size_t) si * g.T + t) * g.L;
+            for (size_t j = 0; j < sq.cells.size(); j++) {
+                const pos_t p0 = sq.cell_pos[j];
+                if (hp.causal_attn && p0 > p1) continue;
+                if (swa && p1 - p0 >= (pos_t) hp.n_swa) continue;   // llama_hparams::is_masked_swa (STANDARD)
+                row[j] = hp.f_max_alibi_bias > 0.0f ? ggml_fp32_to_fp16(-(float) std::abs(p1 - p0)) : zero16;
+            }
+        }
+    }
+    ggml_backend_tensor_set(mask, buf.data(), 0, buf.size());
+}
+
+std::vector<AttnGroup> attn_groups(const UBatch & ub) {
+    // per-sequence token counts and first token, in batch order (sequences are contiguous token ranges)
+    std::vector<uint32_t> n_tok(ub.seqs.size(), 0), tok0(ub.seqs.size(), UINT32_MAX);
+    for (uint32_t i = 0; i < ub.n_tokens; i++) {
+        const int32_t s = ub.seq_idx[i];
+        n_tok[s]++;
+        tok0[s] = std::min(tok0[s], i);
+    }
+    std::vector<int32_t> order;
+    for (int32_t s = 0; s < (int32_t) ub.seqs.size(); s++) if (n_tok[s] > 0) order.push_back(s);
+    std::sort(order.begin(), order.end(), [&](int32_t a, int32_t b) { return tok0[a] < tok0[b]; });
+    std::vector<AttnGroup> groups;
+    for (int32_t s : order) {
+        if (!groups.empty() && groups.back().T == n_tok[s]) {
+            AttnGroup & g = groups.back();
+            g.S++; g.seqs.push_back(s);
+            g.L = std::max<uint32_t>(g.L, (uint32_t) ub.seqs[s].cells.size());
+        } else {
+            AttnGroup g; g.tok0 = tok0[s]; g.T = n_tok[s]; g.S = 1; g.L = (uint32_t) ub.seqs[s].cells.size(); g.seqs = {s};
+            groups.push_back(std::move(g));
+        }
+    }
+    for (auto & g : groups) g.L = std::max<uint32_t>(256, (g.L + 255) / 256 * 256);   // FATTN_KQ_STRIDE alignment
+    return groups;
+}
+
+uint64_t attn_layout_hash(const std::vector<AttnGroup> & groups) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ull; };
+    for (const auto & g : groups) { mix(g.tok0); mix(g.T); mix(g.S); mix(g.L); }
+    return h;
+}
+
+// Reinterpret a contiguous 2-D tensor's rows as another element type (same bytes per row). ggml views keep the
+// source type, so the view's type/strides are patched by hand; only used for raw row copies (get_rows on I32).
+static ggml_tensor * retype_rows(ggml_context * ctx, ggml_tensor * t, ggml_type type, int64_t ne0) {
+    GGML_ASSERT(ggml_is_contiguous(t) && ne0 * (int64_t) ggml_type_size(type) / ggml_blck_size(type) == (int64_t) t->nb[1]);
+    ggml_tensor * v = ggml_view_2d(ctx, t, t->ne[0], t->ne[1], t->nb[1], 0);
+    v->type = type;
+    v->ne[0] = ne0;
+    v->nb[0] = ggml_type_size(type);
+    v->nb[1] = t->nb[1];
+    v->nb[2] = v->nb[1] * v->ne[1];
+    v->nb[3] = v->nb[2];
+    return v;
+}
+
+ggml_tensor * GraphContext::gather_rows(ggml_tensor * cache, ggml_tensor * idx) {
+    const int64_t n_embd_gqa = cache->ne[0];
+    const size_t row_bytes = cache->nb[1];
+    if ((cache->type == GGML_TYPE_F16 || cache->type == GGML_TYPE_BF16) && row_bytes % 4 == 0) {
+        // raw row copy: gather the cache viewed as I32 words, then view the result back as F16/BF16
+        ggml_tensor * ci = retype_rows(ctx0, cache, GGML_TYPE_I32, (int64_t) (row_bytes / 4));
+        ggml_tensor * g = ggml_get_rows(ctx0, ci, idx);
+        return retype_rows(ctx0, g, cache->type, n_embd_gqa);
+    }
+    // quantized (or odd-sized) cache: get_rows dequantises to F32, flash attention wants F16
+    return ggml_cast(ctx0, ggml_get_rows(ctx0, cache, idx), GGML_TYPE_F16);
+}
+
+ggml_tensor * GraphContext::build_attn_gather(ggml_tensor * q, float kq_scale, int il) {
+    // q: [head_dim, n_head, n_tokens]
+    const int64_t head_dim = q->ne[0], n_head = q->ne[1];
+    const int64_t n_head_kv = hp.n_head_kv[il];
+    ggml_tensor * qc = ggml_is_contiguous(q) ? q : ggml_cont(ctx0, q);
+    ggml_tensor * kf = kv.k_full(il);
+    ggml_tensor * vf = kv.v_full(il);
+    const int64_t head_dim_k = kf->ne[0] / n_head_kv;
+    const int64_t head_dim_v = vf->ne[0] / n_head_kv;
+    ggml_tensor * out = nullptr;
+    for (size_t gi = 0; gi < groups.size(); gi++) {
+        const AttnGroup & g = groups[gi];
+        // gathered K/V: [n_embd_gqa, L*S] -> [head_dim, n_head_kv, L, S] -> [head_dim, L, n_head_kv, S]
+        ggml_tensor * kg = ggml_reshape_4d(ctx0, gather_rows(kf, inp_gather_idx[gi]), head_dim_k, n_head_kv, g.L, g.S);
+        ggml_tensor * vg = ggml_reshape_4d(ctx0, gather_rows(vf, inp_gather_idx[gi]), head_dim_v, n_head_kv, g.L, g.S);
+        kg = ggml_permute(ctx0, kg, 0, 2, 1, 3);
+        vg = ggml_permute(ctx0, vg, 0, 2, 1, 3);
+        // queries of the group: batch tokens [tok0, tok0 + T*S) -> [head_dim, n_head, T, S] -> [head_dim, T, n_head, S]
+        ggml_tensor * qg = ggml_view_3d(ctx0, qc, head_dim, n_head, (int64_t) g.T * g.S, qc->nb[1], qc->nb[2], (size_t) g.tok0 * qc->nb[2]);
+        qg = ggml_reshape_4d(ctx0, qg, head_dim, n_head, g.T, g.S);
+        qg = ggml_permute(ctx0, qg, 0, 2, 1, 3);
+        ggml_tensor * mask = (!inp_gmask_swa.empty() && hp.is_swa[il]) ? inp_gmask_swa[gi] : inp_gmask[gi];
+        ggml_tensor * cur = ggml_flash_attn_ext(ctx0, qg, kg, vg, mask, kq_scale, hp.f_max_alibi_bias, hp.f_attn_logit_softcapping);
+        ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
+        // res: [head_dim_v, n_head, T, S] (contiguous) -> [head_dim_v * n_head, T*S]
+        cur = ggml_reshape_2d(ctx0, cur, head_dim_v * n_head, (int64_t) g.T * g.S);
+        out = out ? ggml_concat(ctx0, out, cur, 1) : cur;
+    }
+    ggml_build_forward_expand(gf, out);
+    return out;
 }
 
 void GraphContext::fill_kq_mask(ggml_tensor * mask, bool swa) const {

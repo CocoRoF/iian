@@ -26,7 +26,7 @@ struct Engine::GraphState {
     std::unique_ptr<GraphContext> gc;
     UBatch ub;                   // the batch the current graph was built for (inputs are re-set every step)
     // topology key: if unchanged, the graph (and its allocation) is reused and only the inputs are refilled
-    struct Key { uint32_t n_tokens = 0, n_outputs = 0, n_kv = 0, kv_start = 0; bool paged = false; bool valid = false; } key;
+    struct Key { uint32_t n_tokens = 0, n_outputs = 0, n_kv = 0, kv_start = 0; bool paged = false; bool valid = false; uint64_t layout = 0; } key;
     uint64_t n_reused = 0, n_built = 0;
     // IIAN_PROFILE=1: per-phase step timings (microseconds), reported every 500 steps and at shutdown
     struct Prof { bool on = false; uint64_t steps = 0, tokens = 0, us_sched = 0, us_batch = 0, us_build = 0, us_inputs = 0, us_compute = 0, us_outputs = 0; } prof;
@@ -170,18 +170,23 @@ Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(
     {
         const bool cpu_only = backends_.size() == 1 && backends_[0] == backend_cpu_;
         const bool supported = paged_attn_supported(kv_->type_k(), kv_->type_v(), hp.f_max_alibi_bias);
+        // gather: per-sequence batched flash attention (any backend; the GPU default). Requires flash attention.
         if (cfg.attention == "paged") {
             if (!cpu_only || !supported) throw std::runtime_error("attention=paged requires CPU-only execution with f16/f32 KV cache and no ALiBi");
             paged_attn_ = true;
             cfg_.attention_force_paged = true;
         } else if (cfg.attention == "masked") {
             paged_attn_ = false;
+        } else if (cfg.attention == "gather") {
+            if (!cfg_.flash_attn) throw std::runtime_error("attention=gather requires flash attention");
+            gather_attn_ = true;
         } else if (cfg.attention == "auto") {
             paged_attn_ = cpu_only && supported;
+            gather_attn_ = !cpu_only && cfg_.flash_attn;
         } else {
-            throw std::runtime_error("unknown attention mode '" + cfg.attention + "' (auto|masked|paged)");
+            throw std::runtime_error("unknown attention mode '" + cfg.attention + "' (auto|masked|paged|gather)");
         }
-        cfg_.attention = paged_attn_ ? "paged" : "masked";
+        cfg_.attention = paged_attn_ ? "paged" : gather_attn_ ? "gather" : "masked";
     }
 
     if (!cfg.spec_draft_model.empty()) {
@@ -196,7 +201,7 @@ Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(
     t_last_stats_ = std::chrono::steady_clock::now();
     LOG_INF("engine", "ready: max_model_len=%u kv_cells=%u (%.1f MiB) block_size=%u prefix_cache=%s attention=%s%s threads=%d max_num_seqs=%u max_batched_tokens=%u",
             max_model_len_, kv_->num_cells(), kv_->bytes() / 1048576.0, kv_->block_size(), cfg.enable_prefix_caching ? "on" : "off",
-            cfg_.attention.c_str(), (!paged_attn_ && cfg.flash_attn) ? "(flash)" : "", cfg_.n_threads, cfg_.sched.max_num_seqs, cfg_.sched.max_num_batched_tokens);
+            cfg_.attention.c_str(), (!paged_attn_ && !gather_attn_ && cfg.flash_attn) ? "(flash)" : "", cfg_.n_threads, cfg_.sched.max_num_seqs, cfg_.sched.max_num_batched_tokens);
 }
 
 Engine::~Engine() {
@@ -416,6 +421,8 @@ bool Engine::step() {
     }
 
     // ---- build micro-batch ----
+    // gather attention groups sequences with equal token counts into contiguous token ranges of the batch
+    if (gather_attn_) std::stable_sort(so.scheduled.begin(), so.scheduled.end(), [](const ScheduledRequest & a, const ScheduledRequest & b) { return a.n_new_tokens > b.n_new_tokens; });
     UBatch ub;
     ub.n_tokens = so.total_tokens;
     ub.tokens.reserve(ub.n_tokens); ub.pos.reserve(ub.n_tokens); ub.seq_idx.reserve(ub.n_tokens); ub.slots.reserve(ub.n_tokens);
@@ -469,19 +476,20 @@ bool Engine::step() {
     // on models with few heads run faster through ggml's fused kernel; everything else goes paged.
     const bool paged_step = paged_attn_ && (cfg_.attention_force_paged ||
                             (uint64_t) ub.n_tokens * model_->hparams().n_head_max() >= 2ull * (uint64_t) cfg_.n_threads);
+    const uint64_t layout = gather_attn_ ? attn_layout_hash(attn_groups(ub)) : 0;
     const bool reuse = g.key.valid && g.key.n_tokens == ub.n_tokens && g.key.n_outputs == ub.n_outputs
-                       && g.key.n_kv == ub.n_kv && g.key.kv_start == ub.kv_start && g.key.paged == paged_step;
+                       && g.key.n_kv == ub.n_kv && g.key.kv_start == ub.kv_start && g.key.paged == paged_step && g.key.layout == layout;
     g.ub = std::move(ub);
     if (!reuse) {
         if (g.ctx) { ggml_free(g.ctx); g.ctx = nullptr; }
         ggml_init_params ip = { g.meta.size(), g.meta.data(), /*no_alloc*/ true };
         g.ctx = ggml_init(ip);
         g.gf = ggml_new_graph_custom(g.ctx, max_nodes_, false);
-        g.gc = std::make_unique<GraphContext>(g.ctx, g.gf, *model_, g.ub, *kv_, cfg_.flash_attn, paged_step);
+        g.gc = std::make_unique<GraphContext>(g.ctx, g.gf, *model_, g.ub, *kv_, cfg_.flash_attn, paged_step, gather_attn_);
         model_->arch().build_graph(*g.gc);
         ggml_backend_sched_reset(gsched_);
         if (!ggml_backend_sched_alloc_graph(gsched_, g.gf)) throw std::runtime_error("failed to allocate compute graph");
-        g.key = { g.ub.n_tokens, g.ub.n_outputs, g.ub.n_kv, g.ub.kv_start, paged_step, true };
+        g.key = { g.ub.n_tokens, g.ub.n_outputs, g.ub.n_kv, g.ub.kv_start, paged_step, true, layout };
         g.n_built++;
     } else {
         g.n_reused++;

@@ -30,7 +30,7 @@ struct EngineConfig {
     uint32_t block_size = 16;
     std::string kv_dtype = "f16";        // f16 | bf16 | q8_0 | q4_0 | f32
     bool     flash_attn = true;
-    std::string attention = "auto";     // auto | masked | paged  (paged = iian's CPU paged-attention kernel)
+    std::string attention = "auto";     // auto | masked | paged | gather  (paged = CPU kernel; gather = per-sequence batched flash attention)
     bool attention_force_paged = false;  // set when attention == "paged": use the kernel even for tiny batches
     bool     enable_prefix_caching = true;
     uint64_t seed = 0;
@@ -111,6 +111,7 @@ private:
     std::unique_ptr<GraphState> graph_;
     size_t max_nodes_ = 0;
     bool paged_attn_ = false;
+    bool gather_attn_ = false;
     bool dump_tensors_ = false;
     bool profile_ops_ = false;
     std::unique_ptr<DraftModel> draft_;

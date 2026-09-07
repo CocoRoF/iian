@@ -43,10 +43,24 @@ enum class FfnGate { SEQ, PAR };
 
 struct PagedAttnParams;
 
+// Gather attention ("--attention gather"): sequences of a batch are grouped by their token count T; each group's
+// KV cells are gathered (get_rows) into a contiguous [L, S] layout and attended with ONE batched flash-attention
+// call over the sequence dimension, so a sequence never attends across another sequence's cells. Groups are
+// contiguous token ranges of the batch (the engine orders scheduled sequences by token count).
+struct AttnGroup {
+    uint32_t tok0 = 0;   // first batch token of the group
+    uint32_t T = 0;      // tokens per sequence
+    uint32_t S = 0;      // sequences
+    uint32_t L = 0;      // gathered context length (max sequence length in the group, padded to 256)
+    std::vector<int32_t> seqs;   // ub.seqs indices, in batch order
+};
+std::vector<AttnGroup> attn_groups(const UBatch & ub);
+uint64_t attn_layout_hash(const std::vector<AttnGroup> & groups);
+
 class GraphContext {
 public:
     GraphContext(ggml_context * ctx, ggml_cgraph * gf, const Model & model, const UBatch & ub,
-                 PagedKVCache & kv, bool flash_attn, bool paged_attn = false);
+                 PagedKVCache & kv, bool flash_attn, bool paged_attn = false, bool gather_attn = false);
     ~GraphContext();   // out of line: PagedAttnParams is only complete inside graph.cpp
 
     ggml_context * ctx0;
@@ -57,6 +71,7 @@ public:
     PagedKVCache   & kv;
     const bool     flash_attn;
     const bool     paged_attn;   // use iian's paged-attention kernel instead of the masked window (CPU only)
+    const bool     gather_attn;  // per-sequence gathered flash attention (see AttnGroup); any backend
 
     // shorthand hparams (like llm_graph_context)
     const int64_t n_embd, n_layer, n_tokens, n_outputs, n_rot, n_ctx_orig;
@@ -71,6 +86,9 @@ public:
     ggml_tensor * inp_kq_mask_swa = nullptr; // same shape, sliding-window restricted; only built when some layer has hp.is_swa[il]
     ggml_tensor * inp_k_idxs  = nullptr;   // I64 [n_tokens]
     ggml_tensor * inp_v_idxs  = nullptr;   // I64 [n_tokens]
+    // gather attention inputs, one per group: I32 [L*S] cell indices and F16 [L, T, 1, S] masks
+    std::vector<AttnGroup>     groups;
+    std::vector<ggml_tensor *> inp_gather_idx, inp_gmask, inp_gmask_swa;
 
     // outputs
     ggml_tensor * t_logits = nullptr;
@@ -123,8 +141,11 @@ public:
 
 private:
     ggml_tensor * build_attn_mha(ggml_tensor * q, ggml_tensor * k, ggml_tensor * v, ggml_tensor * kq_mask, float kq_scale, int il);
+    ggml_tensor * build_attn_gather(ggml_tensor * q, float kq_scale, int il);
+    ggml_tensor * gather_rows(ggml_tensor * cache, ggml_tensor * idx);   // rows of a KV cache tensor as F16 [n_embd_gqa, n]
     bool has_swa_layers() const;
     void fill_kq_mask(ggml_tensor * mask, bool swa) const;
+    void fill_gather_mask(ggml_tensor * mask, const AttnGroup & g, bool swa) const;
     mutable std::vector<uint8_t> mask_scratch_;   // host staging buffer for the mask (reused across steps)
 };
 
