@@ -32,7 +32,7 @@ struct EngineConfig {
     bool     flash_attn = true;
     std::string attention = "auto";     // auto | masked | paged | gather  (paged = CPU kernel; gather = per-sequence batched flash attention)
     bool attention_force_paged = false;  // set when attention == "paged": use the kernel even for tiny batches
-    bool warmup = true;                  // run a small prefill + decode inside start() so kernels, cuBLAS and CUDA graphs are initialised before the first request
+    bool warmup = true;                  // run a small prefill + decode on the engine thread during construction so kernels, cuBLAS and CUDA graphs are initialised before the first request
     bool     enable_prefix_caching = true;
     uint64_t seed = 0;
     // speculative decoding via prompt lookup (n-gram): propose up to spec_ngram tokens that followed the most recent
@@ -125,7 +125,9 @@ private:
     std::vector<std::shared_ptr<Request>> new_requests_;
     std::vector<request_id_t> aborts_;
     std::atomic<request_id_t> next_id_{1};
-    std::atomic<bool> running_{false};
+    std::atomic<bool> running_{false};   // start() called and not stopped: the engine thread serves requests
+    bool quit_ = false;                  // stop(): the engine thread exits (also releases a thread parked before start())
+    bool warmup_done_ = false;           // set by the engine thread once construction-time warmup finished
     std::thread thread_;
 
     mutable std::mutex stats_mtx_;

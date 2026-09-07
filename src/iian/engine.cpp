@@ -209,7 +209,12 @@ Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(
     LOG_INF("engine", "ready: max_model_len=%u kv_cells=%u (%.1f MiB) block_size=%u prefix_cache=%s attention=%s%s threads=%d max_num_seqs=%u max_batched_tokens=%u",
             max_model_len_, kv_->num_cells(), kv_->bytes() / 1048576.0, kv_->block_size(), cfg.enable_prefix_caching ? "on" : "off",
             cfg_.attention.c_str(), (!paged_attn_ && !gather_attn_ && cfg.flash_attn) ? "(flash)" : "", cfg_.n_threads, cfg_.sched.max_num_seqs, cfg_.sched.max_num_batched_tokens);
-    if (cfg_.warmup) warmup();
+    // the engine thread is created now so the warmup runs on it; it parks until start()
+    thread_ = std::thread([this] { run_loop(); });
+    {
+        std::unique_lock<std::mutex> lk(mtx_);
+        cv_.wait(lk, [&] { return warmup_done_; });
+    }
 }
 
 Engine::~Engine() {
@@ -229,13 +234,15 @@ std::string Engine::backend_summary() const {
 
 void Engine::start() {
     if (running_.exchange(true)) return;
-    thread_ = std::thread([this] { run_loop(); });
+    if (!thread_.joinable()) thread_ = std::thread([this] { run_loop(); });   // restarted after stop(): no warmup
+    cv_.notify_all();
 }
 
 // One small prefill batch plus a decode step before serving: loads the backend kernels (CUDA lazy module loading),
 // initialises cuBLAS and captures the first CUDA graph, so the first real request does not pay for it (the same
-// idea as llama.cpp's start-up warmup). Runs at the end of construction, before any request can be submitted, on the
-// constructing thread.
+// idea as llama.cpp's start-up warmup). Runs on the engine thread during construction, before any request can be
+// submitted: the CUDA per-thread state and everything else is initialised on the thread that will serve requests
+// (measured on an RTX 5090: a warmup on the constructing thread still left ~90 ms in the engine thread's first step).
 void Engine::warmup() {
     const int64_t t0 = ggml_time_us();
     uint32_t want = 64;
@@ -263,9 +270,11 @@ void Engine::warmup() {
 }
 
 void Engine::stop() {
-    if (!running_.exchange(false)) return;
+    const bool was_running = running_.exchange(false);
+    { std::lock_guard<std::mutex> lk(mtx_); quit_ = true; }
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
+    if (!was_running) return;
     if (graph_) graph_->report();
     if (profile_ops_) report_op_profile();
     // abort everything left
@@ -359,6 +368,18 @@ EngineStats Engine::stats() const {
 
 void Engine::run_loop() {
     LOG_DBG("engine", "engine thread started");
+    {
+        // construction-time warmup, then park until start() (or stop()/destruction)
+        std::unique_lock<std::mutex> lk(mtx_);
+        if (!warmup_done_) {
+            lk.unlock();
+            if (cfg_.warmup) warmup();
+            lk.lock();
+            warmup_done_ = true;
+            cv_.notify_all();
+        }
+        cv_.wait(lk, [&] { return running_.load() || quit_; });
+    }
     while (running_) {
         bool did = false;
         try {
