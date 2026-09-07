@@ -508,6 +508,7 @@ ggml_tensor * GraphContext::build_attn_gather(ggml_tensor * q, float kq_scale, i
         ggml_tensor * mask = (!inp_gmask_swa.empty() && hp.is_swa[il]) ? inp_gmask_swa[gi] : inp_gmask[gi];
         ggml_tensor * cur = ggml_flash_attn_ext(ctx0, qg, kg, vg, mask, kq_scale, hp.f_max_alibi_bias, hp.f_attn_logit_softcapping);
         ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
+        ggml_format_name(cur, "fa_T%u_S%u_L%u-%d", g.T, g.S, g.L, il);   // shape-labelled for IIAN_PROFILE=ops
         // res: [head_dim_v, n_head, T, S] (contiguous) -> [head_dim_v * n_head, T*S]
         cur = ggml_reshape_2d(ctx0, cur, head_dim_v * n_head, (int64_t) g.T * g.S);
         out = out ? ggml_concat(ctx0, out, cur, 1) : cur;
