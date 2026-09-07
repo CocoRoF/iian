@@ -238,7 +238,9 @@ void Engine::start() {
 // constructing thread.
 void Engine::warmup() {
     const int64_t t0 = ggml_time_us();
-    const uint32_t n = std::max<uint32_t>(1, std::min<uint32_t>({64u, max_model_len_ > 4 ? max_model_len_ - 4 : 1u, cfg_.sched.max_num_batched_tokens}));
+    uint32_t want = 64;
+    if (const char * e = getenv("IIAN_WARMUP_TOKENS")) want = (uint32_t) std::max(1, atoi(e));   // experiment knob
+    const uint32_t n = std::max<uint32_t>(1, std::min<uint32_t>({want, max_model_len_ > 4 ? max_model_len_ - 4 : 1u, cfg_.sched.max_num_batched_tokens}));
     const auto & sp = model_->tokenizer().special();
     const token_t t = sp.bos != TOKEN_NULL ? sp.bos : (sp.eos != TOKEN_NULL ? sp.eos : 0);
     std::vector<token_t> toks(n, t);
