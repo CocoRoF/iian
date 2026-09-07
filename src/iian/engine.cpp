@@ -533,8 +533,11 @@ bool Engine::step() {
         g.gf = ggml_new_graph_custom(g.ctx, max_nodes_, false);
         g.gc = std::make_unique<GraphContext>(g.ctx, g.gf, *model_, g.ub, *kv_, cfg_.flash_attn, paged_step, gather_step);
         model_->arch().build_graph(*g.gc);
+        const int64_t t_graph = ggml_time_us();
         ggml_backend_sched_reset(gsched_);
         if (!ggml_backend_sched_alloc_graph(gsched_, g.gf)) throw std::runtime_error("failed to allocate compute graph");
+        LOG_DBG("engine", "graph built: %u tokens, %u outputs, n_kv=%u, %s, %d nodes; construct %.1f ms, alloc %.1f ms", g.ub.n_tokens, g.ub.n_outputs, g.ub.n_kv,
+                paged_step ? "paged" : gather_step ? "gather" : "masked", ggml_graph_n_nodes(g.gf), (t_graph - t0) / 1000.0, (ggml_time_us() - t_graph) / 1000.0);
         g.key = { g.ub.n_tokens, g.ub.n_outputs, g.ub.n_kv, g.ub.kv_start, paged_step, true, layout, gather_step };
         g.n_built++;
     } else {

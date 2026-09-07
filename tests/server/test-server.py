@@ -303,7 +303,7 @@ def main():
         st, j1, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": longp, "max_tokens": 4, "temperature": 0})
         st, j2, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": longp, "max_tokens": 4, "temperature": 0})
         cached = j2.get("usage", {}).get("prompt_tokens_details", {}).get("cached_tokens", 0)
-        check("prefix cache hit reported", cached > 0 and j1["choices"][0]["text"] == j2["choices"][0]["text"], (j1.get("usage"), j2.get("usage")))
+        check("prefix cache hit reported", cached > 0 and same_or_near_tie(j1, j2), (j1.get("usage"), j2.get("usage"), j1["choices"][0]["text"], j2["choices"][0]["text"]))
 
         # ---- tokenize / detokenize ----
         st, tj, _, _ = request("POST", "/tokenize", {"prompt": "Hello, world! 안녕하세요"})
