@@ -36,7 +36,7 @@ if [ "$MODE" = full ]; then
   for m in models/*.gguf; do
     for p in "The capital of France is" "def quicksort(arr):" "Once upon a time"; do
       ours=$(./build/tests/test-generate "$m" "$p" 32 --threads 8 --attn masked 2>/dev/null | sed -n 's/^TEXT: //p' | sed 's/\\n/ /g' | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')
-      ref=$($LLAMA_BIN/llama-completion -m "$m" -p "$p" -n 32 --temp 0 -no-cnv --no-warmup -ngl 99 2>/dev/null | tr -d '\r' | sed 's/\[end of text\]//' | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')
+      ref=$(CUDA_VISIBLE_DEVICES=${BEST:-0} $LLAMA_BIN/llama-completion -m "$m" -p "$p" -n 32 --temp 0 -no-cnv --no-warmup -ngl 99 2>/dev/null | tr -d '\r' | sed 's/\[end of text\]//' | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')
       if [ "$ours" = "$ref" ]; then echo "PASS  $(basename $m) | $p"; else echo "FAIL  $(basename $m) | $p"; echo "   iian : $ours"; echo "   llama: $ref"; FAILS=$((FAILS+1)); fi
     done
   done

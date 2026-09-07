@@ -214,7 +214,7 @@ def main():
         # ---- tool calls ----
         tools = [{"type": "function", "function": {"name": "get_weather", "description": "Get the weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}, "unit": {"type": "string", "enum": ["c", "f"]}}, "required": ["city"], "additionalProperties": False}}},
                  {"type": "function", "function": {"name": "get_time", "parameters": {"type": "object", "properties": {"tz": {"type": "string"}}, "required": ["tz"], "additionalProperties": False}}}]
-        tbody = {"model": MODEL_NAME, "messages": [{"role": "user", "content": "What is the weather in Paris?"}], "tools": tools, "tool_choice": "required", "max_tokens": 96, "temperature": 0}
+        tbody = {"model": MODEL_NAME, "messages": [{"role": "user", "content": "What is the weather in Paris?"}], "tools": tools, "tool_choice": "required", "parallel_tool_calls": False, "max_tokens": 96, "temperature": 0}
         st, j, _, _ = request("POST", "/v1/chat/completions", tbody)
         tc = j["choices"][0]["message"].get("tool_calls", []) if st == 200 else []
         ok = st == 200 and tc and tc[0]["type"] == "function" and tc[0]["function"]["name"] in ("get_weather", "get_time") and tc[0]["id"].startswith("call_")
@@ -266,19 +266,37 @@ def main():
         check("n=2 returns 2 choices", st == 200 and len(j["choices"]) == 2 and [c["index"] for c in j["choices"]] == [0, 1], (st, j))
 
         # ---- concurrency: batched results equal sequential ----
+        # Greedy outputs must match token for token. Like tests/e2e/test-batching, a divergence is tolerated only
+        # at a near tie (top-2 within 0.25 nats in both runs, each pick the other's runner-up): GPU backends choose
+        # different kernels per batch shape and their rounding differs by up to ~0.1 nats.
         prompts = ["The capital of France is", "Once upon a time", "def add(a, b):", "Water boils at"]
+        def tops(j):
+            lp = j["choices"][0]["logprobs"]
+            return [sorted(t.items(), key=lambda kv: -kv[1])[:2] for t in lp["top_logprobs"]], lp["tokens"]
+        def same_or_near_tie(a, b):
+            (ta, toka), (tb, tokb) = tops(a), tops(b)
+            if toka == tokb:
+                return True
+            i = 0
+            while i < min(len(toka), len(tokb)) and toka[i] == tokb[i]:
+                i += 1
+            if i >= min(len(ta), len(tb)) or len(ta[i]) < 2 or len(tb[i]) < 2:
+                return False
+            gap_a, gap_b = ta[i][0][1] - ta[i][1][1], tb[i][0][1] - tb[i][1][1]
+            return 0 <= gap_a < 0.25 and 0 <= gap_b < 0.25 and ta[i][1][0] == tokb[i] and tb[i][1][0] == toka[i]
         seq = {}
         for p in prompts:
-            st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": p, "max_tokens": 16, "temperature": 0})
-            seq[p] = j["choices"][0]["text"]
+            st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": p, "max_tokens": 16, "temperature": 0, "logprobs": 2})
+            seq[p] = j
         conc = {}
         def worker(p):
-            st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": p, "max_tokens": 16, "temperature": 0})
-            conc[p] = j["choices"][0]["text"] if st == 200 else ("ERR", st, j)
+            st, j, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": p, "max_tokens": 16, "temperature": 0, "logprobs": 2})
+            conc[p] = j if st == 200 else {"error": (st, j)}
         ths = [threading.Thread(target=worker, args=(p,)) for p in prompts * 2]
         [t.start() for t in ths]
         [t.join() for t in ths]
-        check("8 concurrent requests == sequential", all(conc[p] == seq[p] for p in prompts), (seq, conc))
+        check("8 concurrent requests == sequential", all("error" not in conc[p] and same_or_near_tie(seq[p], conc[p]) for p in prompts),
+              {p: (seq[p]["choices"][0]["text"], conc[p]["choices"][0]["text"] if "error" not in conc[p] else conc[p]) for p in prompts})
 
         # ---- prefix caching ----
         longp = "This is a long shared prefix. " * 12 + "The capital of France is"

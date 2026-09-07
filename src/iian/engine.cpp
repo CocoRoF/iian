@@ -28,7 +28,16 @@ struct Engine::GraphState {
     // topology key: if unchanged, the graph (and its allocation) is reused and only the inputs are refilled
     struct Key { uint32_t n_tokens = 0, n_outputs = 0, n_kv = 0, kv_start = 0; bool paged = false; bool valid = false; } key;
     uint64_t n_reused = 0, n_built = 0;
+    // IIAN_PROFILE=1: per-phase step timings (microseconds), reported every 500 steps and at shutdown
+    struct Prof { bool on = false; uint64_t steps = 0, tokens = 0, us_sched = 0, us_batch = 0, us_build = 0, us_inputs = 0, us_compute = 0, us_outputs = 0; } prof;
     ~GraphState() { if (ctx) ggml_free(ctx); }
+    void report() const {
+        if (!prof.on || prof.steps == 0) return;
+        const double n = (double) prof.steps;
+        fprintf(stderr, "iian profile: %llu steps, %.1f tokens/step | per step: schedule %.0f us, batch %.0f us, graph build %.0f us (%llu builds, %llu reuses), inputs %.0f us, compute+logits %.0f us, sampling/outputs %.0f us\n",
+                (unsigned long long) prof.steps, prof.tokens / n, prof.us_sched / n, prof.us_batch / n, prof.us_build / n,
+                (unsigned long long) n_built, (unsigned long long) n_reused, prof.us_inputs / n, prof.us_compute / n, prof.us_outputs / n);
+    }
 };
 
 static ggml_type kv_type_from_string(const std::string & s) {
@@ -128,6 +137,7 @@ Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(
     for (auto * b : backends_) bufts.push_back(ggml_backend_get_default_buffer_type(b));
     gsched_ = ggml_backend_sched_new(backends_.data(), bufts.data(), (int) backends_.size(), max_nodes_, false, true);
     graph_ = std::make_unique<GraphState>();
+    graph_->prof.on = getenv("IIAN_PROFILE") != nullptr;
     graph_->meta.resize(ggml_tensor_overhead() * max_nodes_ + ggml_graph_overhead_custom(max_nodes_, false));
 
     // attention path: iian's paged kernel is a CPU custom op; use it when everything runs on the CPU
@@ -187,6 +197,7 @@ void Engine::stop() {
     if (!running_.exchange(false)) return;
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
+    if (graph_) graph_->report();
     // abort everything left
     for (Request * r : sched_->all_requests()) finish(r, RequestStatus::FINISHED_ABORTED, FinishReason::ABORT, "engine shutting down");
 }
@@ -363,7 +374,9 @@ bool Engine::step() {
     if (!sched_->has_requests()) return false;
 
     // ---- schedule ----
+    const int64_t t_sched0 = ggml_time_us();
     SchedulerOutput so = sched_->schedule();
+    const int64_t t_sched1 = ggml_time_us();
     if (so.scheduled.empty()) {
         if (!so.preempted.empty()) return true;
         // nothing schedulable: requests waiting cannot fit even alone -> fail them
@@ -446,7 +459,9 @@ bool Engine::step() {
     } else {
         g.n_reused++;
     }
+    const int64_t t_built = ggml_time_us();
     g.gc->set_inputs();
+    const int64_t t_inputs = ggml_time_us();
     // IIAN_DUMP_TENSORS=1: print name/shape/sum of every graph node (debugging aid, compare with llama-eval-callback)
     static const bool dump_tensors = getenv("IIAN_DUMP_TENSORS") != nullptr;
     if (dump_tensors) {
@@ -486,6 +501,14 @@ bool Engine::step() {
     {
         std::lock_guard<std::mutex> lk(stats_mtx_);
         stats_.steps++;
+    }
+    if (g.prof.on) {
+        const int64_t t2 = ggml_time_us();
+        auto & pf = g.prof;
+        pf.steps++; pf.tokens += g.ub.n_tokens;
+        pf.us_sched += t_sched1 - t_sched0; pf.us_batch += t0 - t_sched1; pf.us_build += t_built - t0;
+        pf.us_inputs += t_inputs - t_built; pf.us_compute += t1 - t_inputs; pf.us_outputs += t2 - t1;
+        if (pf.steps % 500 == 0) g.report();
     }
     return true;
 }
