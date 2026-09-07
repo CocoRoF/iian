@@ -300,8 +300,8 @@ def main():
 
         # ---- prefix caching ----
         longp = "This is a long shared prefix. " * 12 + "The capital of France is"
-        st, j1, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": longp, "max_tokens": 4, "temperature": 0})
-        st, j2, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": longp, "max_tokens": 4, "temperature": 0})
+        st, j1, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": longp, "max_tokens": 4, "temperature": 0, "logprobs": 2})
+        st, j2, _, _ = request("POST", "/v1/completions", {"model": MODEL_NAME, "prompt": longp, "max_tokens": 4, "temperature": 0, "logprobs": 2})
         cached = j2.get("usage", {}).get("prompt_tokens_details", {}).get("cached_tokens", 0)
         check("prefix cache hit reported", cached > 0 and same_or_near_tie(j1, j2), (j1.get("usage"), j2.get("usage"), j1["choices"][0]["text"], j2["choices"][0]["text"]))
 

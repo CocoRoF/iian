@@ -74,9 +74,11 @@ prefix-cache hits and preempted requests all produce exactly the same tokens as 
 
 ## Status and roadmap
 
-Phases 0–1 (engine, serving, CLI) and most of Phase 2 (CPU paged attention, structured output, tool calling,
-embeddings, prompt-lookup speculative decoding) are done; next: multi-model router, GPU paged attention,
-draft-model speculation. See `docs/ROADMAP.md`.
+Phases 0–1 (engine, serving, CLI) and Phase 2's core (CPU paged attention, gathered batched flash attention on
+GPUs, CUDA graphs, structured output incl. regex, tool calling, embeddings, n-gram and draft-model speculative
+decoding, multi-model router) are done. On an RTX 5090 every supported model matches llama.cpp's CUDA output
+token for token, single-stream decode is at parity and batched decode is ahead (`docs/gpu.md`); next: sliding-window
+KV eviction, pipeline parallelism, Python bindings. See `docs/ROADMAP.md`.
 
 ## License
 

@@ -32,7 +32,7 @@ Status legend: ✅ done · 🚧 in progress · ⬜ planned
 - ✅ speculative decoding: n-gram/prompt-lookup drafts (`--spec-ngram N`, exact one-hot rejection sampling, greedy output unchanged); ✅ draft-model drafts (`--spec-draft small.gguf`, batched draft KV; 89% acceptance with a Q8 SmolLM2 draft for the F16 target, output bit-identical)
 - ⬜ sliding-window KV eviction (free out-of-window blocks, like vLLM's SlidingWindowManager)
 - ✅ quantized KV cache validated on CUDA (q8_0 batching suite, q4_0 generation; `scripts/gpu-test.sh`)
-- 🚧 CUDA graphs for steady-state decode (ggml's graph capture, enabled in the build); ⬜ pipeline parallel across GPUs (ggml sched supports it)
+- ✅ CUDA graphs for steady-state decode (ggml graph capture, on by default); ✅ start-up warmup on the engine thread (15 ms TTFT for a 256-token prompt on a 5090, see `docs/gpu.md`); ⬜ pipeline parallel across GPUs (ggml sched supports it)
 - ✅ regex-constrained output (`guided_regex`, `structured_outputs.regex`, `--regex`)
 - ⬜ prefill/decode budget tuning, long-prefill threshold defaults per device
 - ⬜ benchmark suite (`iian bench`, serving benchmark vs llama-server and vLLM)
