@@ -26,17 +26,17 @@ struct Engine::GraphState {
     std::unique_ptr<GraphContext> gc;
     UBatch ub;                   // the batch the current graph was built for (inputs are re-set every step)
     // topology key: if unchanged, the graph (and its allocation) is reused and only the inputs are refilled
-    struct Key { uint32_t n_tokens = 0, n_outputs = 0, n_kv = 0, kv_start = 0; bool paged = false; bool valid = false; uint64_t layout = 0; } key;
+    struct Key { uint32_t n_tokens = 0, n_outputs = 0, n_kv = 0, kv_start = 0; bool paged = false; bool valid = false; uint64_t layout = 0; bool gather = false; } key;
     uint64_t n_reused = 0, n_built = 0;
     // IIAN_PROFILE=1: per-phase step timings (microseconds), reported every 500 steps and at shutdown
-    struct Prof { bool on = false; uint64_t steps = 0, tokens = 0, us_sched = 0, us_batch = 0, us_build = 0, us_inputs = 0, us_compute = 0, us_outputs = 0, us_sample = 0; } prof;
+    struct Prof { bool on = false; uint64_t steps = 0, tokens = 0, us_sched = 0, us_batch = 0, us_build = 0, us_inputs = 0, us_compute = 0, us_outputs = 0, us_sample = 0; int n_splits = 0, n_copies = 0; } prof;
     ~GraphState() { if (ctx) ggml_free(ctx); }
     void report() const {
         if (!prof.on || prof.steps == 0) return;
         const double n = (double) prof.steps;
-        fprintf(stderr, "iian profile: %llu steps, %.1f tokens/step | per step: schedule %.0f us, batch %.0f us, graph build %.0f us (%llu builds, %llu reuses), inputs %.0f us, compute+logits %.0f us, sampling/outputs %.0f us (sampler %.0f us)\n",
+        fprintf(stderr, "iian profile: %llu steps, %.1f tokens/step | per step: schedule %.0f us, batch %.0f us, graph build %.0f us (%llu builds, %llu reuses), inputs %.0f us, compute+logits %.0f us (%d splits, %d copies), sampling/outputs %.0f us (sampler %.0f us)\n",
                 (unsigned long long) prof.steps, prof.tokens / n, prof.us_sched / n, prof.us_batch / n, prof.us_build / n,
-                (unsigned long long) n_built, (unsigned long long) n_reused, prof.us_inputs / n, prof.us_compute / n, prof.us_outputs / n, prof.us_sample / n);
+                (unsigned long long) n_built, (unsigned long long) n_reused, prof.us_inputs / n, prof.us_compute / n, prof.n_splits, prof.n_copies, prof.us_outputs / n, prof.us_sample / n);
     }
 };
 
@@ -476,20 +476,30 @@ bool Engine::step() {
     // on models with few heads run faster through ggml's fused kernel; everything else goes paged.
     const bool paged_step = paged_attn_ && (cfg_.attention_force_paged ||
                             (uint64_t) ub.n_tokens * model_->hparams().n_head_max() >= 2ull * (uint64_t) cfg_.n_threads);
-    const uint64_t layout = gather_attn_ ? attn_layout_hash(attn_groups(ub)) : 0;
+    // gather attention pays per-layer K/V gathers to keep each sequence's attention O(its own length); a step with
+    // a single contiguous sequence already has a window of exactly that sequence, so it takes the plain masked
+    // path (no gathers). Multiple sequences, or one sequence spread over a wide window, use gather.
+    bool gather_step = false;
+    if (gather_attn_) {
+        uint32_t n_active = 0, sum_len = 0;
+        for (const auto & sq : ub.seqs) if (!sq.cells.empty()) { n_active++; sum_len += (uint32_t) sq.cells.size(); }
+        gather_step = n_active > 1 || ub.n_kv > sum_len + 256;
+    }
+    const uint64_t layout = gather_step ? attn_layout_hash(attn_groups(ub)) : 0;
     const bool reuse = g.key.valid && g.key.n_tokens == ub.n_tokens && g.key.n_outputs == ub.n_outputs
-                       && g.key.n_kv == ub.n_kv && g.key.kv_start == ub.kv_start && g.key.paged == paged_step && g.key.layout == layout;
+                       && g.key.n_kv == ub.n_kv && g.key.kv_start == ub.kv_start && g.key.paged == paged_step && g.key.layout == layout
+                       && g.key.gather == gather_step;
     g.ub = std::move(ub);
     if (!reuse) {
         if (g.ctx) { ggml_free(g.ctx); g.ctx = nullptr; }
         ggml_init_params ip = { g.meta.size(), g.meta.data(), /*no_alloc*/ true };
         g.ctx = ggml_init(ip);
         g.gf = ggml_new_graph_custom(g.ctx, max_nodes_, false);
-        g.gc = std::make_unique<GraphContext>(g.ctx, g.gf, *model_, g.ub, *kv_, cfg_.flash_attn, paged_step, gather_attn_);
+        g.gc = std::make_unique<GraphContext>(g.ctx, g.gf, *model_, g.ub, *kv_, cfg_.flash_attn, paged_step, gather_step);
         model_->arch().build_graph(*g.gc);
         ggml_backend_sched_reset(gsched_);
         if (!ggml_backend_sched_alloc_graph(gsched_, g.gf)) throw std::runtime_error("failed to allocate compute graph");
-        g.key = { g.ub.n_tokens, g.ub.n_outputs, g.ub.n_kv, g.ub.kv_start, paged_step, true, layout };
+        g.key = { g.ub.n_tokens, g.ub.n_outputs, g.ub.n_kv, g.ub.kv_start, paged_step, true, layout, gather_step };
         g.n_built++;
     } else {
         g.n_reused++;
@@ -545,6 +555,7 @@ bool Engine::step() {
         pf.steps++; pf.tokens += g.ub.n_tokens;
         pf.us_sched += t_sched1 - t_sched0; pf.us_batch += t0 - t_sched1; pf.us_build += t_built - t0;
         pf.us_inputs += t_inputs - t_built; pf.us_compute += t1 - t_inputs; pf.us_outputs += t2 - t1;
+        pf.n_splits = ggml_backend_sched_get_n_splits(gsched_); pf.n_copies = ggml_backend_sched_get_n_copies(gsched_);
         if (pf.steps % 500 == 0) g.report();
     }
     return true;
