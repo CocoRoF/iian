@@ -570,7 +570,9 @@ bool Engine::step() {
     }
     if (dump_tensors_) ggml_backend_sched_set_eval_callback(gsched_, dump_tensor_cb, nullptr);
     else if (profile_ops_) ggml_backend_sched_set_eval_callback(gsched_, profile_op_cb, nullptr);
+    const int64_t t_c0 = ggml_time_us();
     ggml_status st = ggml_backend_sched_graph_compute(gsched_, g.gf);
+    const int64_t t_c1 = ggml_time_us();
     if (st != GGML_STATUS_SUCCESS) throw std::runtime_error("graph compute failed with status " + std::to_string((int) st));
 
     // ---- fetch logits ----
@@ -578,8 +580,13 @@ bool Engine::step() {
     std::vector<float> & logits = logits_buf_;   // reused: a fresh >128 KiB vector per step would be mmap'd and page-faulted every time
     logits.resize((size_t) g.ub.n_outputs * n_vocab);
     ggml_backend_tensor_get(g.gc->t_logits, logits.data(), 0, logits.size() * sizeof(float));
+    const int64_t t_c2 = ggml_time_us();
     ggml_backend_sched_synchronize(gsched_);
     const int64_t t1 = ggml_time_us();
+    if (g.prof.on && g.prof.steps < 12)
+        LOG_INF("engine", "step %llu: %u tokens%s; build %.1f ms, inputs %.1f ms, graph compute %.1f ms, logits get %.1f ms, sync %.1f ms",
+                (unsigned long long) g.prof.steps, g.ub.n_tokens, reuse ? " (reused graph)" : " (new graph)", (t_built - t0) / 1000.0, (t_inputs - t_built) / 1000.0,
+                (t_c1 - t_c0) / 1000.0, (t_c2 - t_c1) / 1000.0, (t1 - t_c2) / 1000.0);
     LOG_TRC("engine", "step: %u tokens, %zu seqs, n_kv=%u, %u outputs, %.1f ms%s", g.ub.n_tokens, so.scheduled.size(), g.ub.n_kv, g.ub.n_outputs, (t1 - t0) / 1000.0, reuse ? " (graph reused)" : "");
 
     // ---- sample + outputs ----
