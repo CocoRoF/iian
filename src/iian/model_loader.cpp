@@ -368,9 +368,16 @@ std::unique_ptr<Model> ModelLoader::load(const std::string & path, const DeviceC
     m->dev_layer_.assign(hp.n_layer, cpu);
     const int first_gpu_layer = (int) hp.n_layer - n_gpu_layers;
     std::vector<float> share(gpus.size(), 1.0f);
+    std::vector<float> split = cfg.tensor_split;
+    if (split.empty()) {
+        if (const char * e = getenv("IIAN_TENSOR_SPLIT")) {   // e.g. "3,1"; companion of IIAN_DEVICES for tests
+            std::string v = e; size_t i = 0;
+            while (i <= v.size() && !v.empty()) { size_t j = v.find(',', i); if (j == std::string::npos) j = v.size(); if (j > i) split.push_back(std::stof(v.substr(i, j - i))); i = j + 1; }
+        }
+    }
     if (!gpus.empty()) {
-        if (!cfg.tensor_split.empty()) {
-            for (size_t i = 0; i < gpus.size(); i++) share[i] = i < cfg.tensor_split.size() ? std::max(0.0f, cfg.tensor_split[i]) : 0.0f;
+        if (!split.empty()) {
+            for (size_t i = 0; i < gpus.size(); i++) share[i] = i < split.size() ? std::max(0.0f, split[i]) : 0.0f;
         } else if (gpus.size() > 1) {
             for (size_t i = 0; i < gpus.size(); i++) {
                 size_t free_b = 0, total_b = 0;
