@@ -17,9 +17,15 @@ Build flags used on the server: `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120
 support Blackwell). cmake/ninja come from `uv tool install`.
 
 On a GPU, `--attention auto` uses ggml's fused flash-attention over the masked window (the CPU paged kernel is
-CPU-only); layers are split across all visible GPUs (`--device CUDA0 --device CUDA1` to pin, `-ngl N` to keep
-some layers on the CPU). The KV cache lives on each layer's device and is auto-sized to a quarter of the free
-GPU memory unless `--kv-cache-gb` / `--kv-cache-tokens` is given.
+CPU-only); layers are split into contiguous chunks across all visible GPUs (`--device CUDA0 --device CUDA1` to
+pin the set and order, `-ts 3,1` to fix the shares, default shares proportional to each GPU's free memory; `-ngl N`
+keeps some layers on the CPU). The KV cache lives on each layer's device, so with a split every GPU holds the cache
+for its own layers; the auto size is the largest cell count for which every device stays within a quarter of its
+free memory (`--kv-cache-gb` / `--kv-cache-tokens` override it). The load log prints the split
+(`layer split: CUDA0: 10 layers (0-9), CUDA1: 20 layers (10-29); output on CUDA1`). Verified on the 2 x 5090 box:
+outputs identical to the single-GPU run, all batching/speculation tests pass, ~950 tok/s single-stream (one
+device-to-device hop per step) and the same batched throughput as one GPU. Prompt processing does not yet pipeline
+micro-batches across the GPUs (ggml's scheduler supports it; planned).
 
 ## Notes from the RTX 5090 runs
 

@@ -361,18 +361,47 @@ std::unique_ptr<Model> ModelLoader::load(const std::string & path, const DeviceC
     m->devices_.push_back(cpu);
     for (auto * g : gpus) m->devices_.push_back(g);
 
-    // layer -> device (single-GPU for now; multi-GPU split is a follow-up: even split by layer)
+    // layer -> device. The GPU layers are split into contiguous chunks across the GPUs in device order, sized by
+    // --tensor-split when given, otherwise by each GPU's free memory (weights and KV cache scale with layer count).
+    // Split vectors are cumulative like llama.cpp's: layer i (of the n offloaded) goes to the first GPU whose
+    // cumulative share exceeds i / n.
     m->dev_layer_.assign(hp.n_layer, cpu);
     const int first_gpu_layer = (int) hp.n_layer - n_gpu_layers;
-    for (int il = 0; il < (int) hp.n_layer; il++) {
-        if (il >= first_gpu_layer && !gpus.empty()) {
-            // spread across GPUs proportionally to free memory (simple: round-robin contiguous chunks)
-            size_t idx = gpus.size() == 1 ? 0 : (size_t) ((il - first_gpu_layer) * gpus.size() / std::max(1, n_gpu_layers));
-            m->dev_layer_[il] = gpus[std::min(idx, gpus.size() - 1)];
+    std::vector<float> share(gpus.size(), 1.0f);
+    if (!gpus.empty()) {
+        if (!cfg.tensor_split.empty()) {
+            for (size_t i = 0; i < gpus.size(); i++) share[i] = i < cfg.tensor_split.size() ? std::max(0.0f, cfg.tensor_split[i]) : 0.0f;
+        } else if (gpus.size() > 1) {
+            for (size_t i = 0; i < gpus.size(); i++) {
+                size_t free_b = 0, total_b = 0;
+                ggml_backend_dev_memory(gpus[i], &free_b, &total_b);
+                if (total_b && free_b > total_b) free_b = total_b;   // UMA backends report host memory as free
+                share[i] = free_b ? (float) (free_b / 1048576.0) : 1.0f;
+            }
+        }
+        float sum = 0.0f; for (float v : share) sum += v;
+        if (sum <= 0.0f) { std::fill(share.begin(), share.end(), 1.0f); sum = (float) share.size(); }
+        std::vector<float> cum(gpus.size(), 0.0f);
+        for (size_t i = 0; i < gpus.size(); i++) cum[i] = (i ? cum[i - 1] : 0.0f) + share[i] / sum;
+        for (int il = first_gpu_layer; il < (int) hp.n_layer; il++) {
+            const float frac = (float) (il - first_gpu_layer + 0.5f) / (float) std::max(1, std::min(n_gpu_layers, (int) hp.n_layer));
+            size_t idx = 0;
+            while (idx + 1 < gpus.size() && cum[idx] <= frac) idx++;
+            m->dev_layer_[il] = gpus[idx];
         }
     }
     m->dev_input_  = cpu;
     m->dev_output_ = (n_gpu_layers > (int) hp.n_layer && !gpus.empty()) ? gpus.back() : cpu;
+    if (gpus.size() > 1) {
+        std::string placement;
+        for (size_t i = 0; i < gpus.size(); i++) {
+            int n = 0, lo = -1, hi = -1;
+            for (int il = 0; il < (int) hp.n_layer; il++) if (m->dev_layer_[il] == gpus[i]) { n++; if (lo < 0) lo = il; hi = il; }
+            if (!placement.empty()) placement += ", ";
+            placement += std::string(ggml_backend_dev_name(gpus[i])) + ": " + std::to_string(n) + (n ? " layers (" + std::to_string(lo) + "-" + std::to_string(hi) + ")" : " layers");
+        }
+        LOG_INF("model", "layer split: %s; output on %s", placement.c_str(), ggml_backend_dev_name(m->dev_output_));
+    }
 
     // ---- create tensors ----
     m->layers.resize(hp.n_layer);

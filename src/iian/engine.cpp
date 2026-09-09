@@ -13,6 +13,7 @@
 #include "ggml.h"
 
 #include <algorithm>
+#include <map>
 #include <numeric>
 #include <cmath>
 #include <cstring>
@@ -133,16 +134,21 @@ Engine::Engine(std::shared_ptr<Model> model, const EngineConfig & cfg) : model_(
     uint32_t cells = cfg.kv_cache_tokens;
     if (cells == 0) {
         cells = max_model_len_ * std::max(1u, std::min(cfg_.sched.max_num_seqs, 4u));
-        // auto budget: never take more than half of the free memory of the device holding the cache
-        size_t budget = cfg.kv_cache_bytes;
-        if (budget == 0) {
-            size_t free_b = 0, total_b = 0;
-            ggml_backend_dev_memory(model_->dev_layer(hp.n_layer - 1), &free_b, &total_b);
-            // some backends report host (UMA) memory as "free"; never trust more than the device's total
-            if (total_b && free_b > total_b) free_b = total_b;
-            if (free_b) budget = free_b / 4;   // conservative: weights, compute buffers and other tenants share this memory
+        // auto budget: the cache lives on each layer's device, so every device holding KV layers must fit its share;
+        // take at most a quarter of each device's free memory (weights, compute buffers and other tenants share it)
+        if (cfg.kv_cache_bytes) {
+            cells = (uint32_t) std::min<size_t>(cells, cfg.kv_cache_bytes / per_cell);
+        } else {
+            std::map<ggml_backend_dev_t, size_t> per_cell_dev;
+            for (uint32_t il = 0; il < hp.n_layer; il++) if (hp.has_kv(il))
+                per_cell_dev[model_->dev_layer(il)] += ggml_row_size(kcfg.type_k, hp.n_embd_k_gqa(il)) + ggml_row_size(kcfg.type_v, hp.n_embd_v_gqa(il));
+            for (const auto & [dev, bytes] : per_cell_dev) {
+                size_t free_b = 0, total_b = 0;
+                ggml_backend_dev_memory(dev, &free_b, &total_b);
+                if (total_b && free_b > total_b) free_b = total_b;   // some backends report host (UMA) memory as "free"
+                if (free_b && bytes) cells = (uint32_t) std::min<size_t>(cells, (free_b / 4) / bytes);
+            }
         }
-        if (budget) cells = (uint32_t) std::min<size_t>(cells, budget / per_cell);
     } else if (cfg.kv_cache_bytes) {
         cells = (uint32_t) std::min<size_t>(cells, cfg.kv_cache_bytes / per_cell);
     }

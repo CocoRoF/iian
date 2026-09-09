@@ -52,6 +52,9 @@ struct DeviceConfig {
     // Devices to place layers on, in order (empty -> auto: best GPU if any, else CPU).
     std::vector<std::string> devices;
     int      n_gpu_layers = -1;   // -1 = all layers if a GPU exists
+    // Fraction of the GPU layers each device gets, in device order (like llama.cpp's --tensor-split); empty ->
+    // proportional to each GPU's free memory at load time.
+    std::vector<float> tensor_split;
     bool     use_mmap     = true;
     bool     use_mlock    = false;
     bool     use_extra_bufts = true;   // CPU weight repacking (ggml "extra" buffer types: Q4_0/Q4_K/Q8_0/IQ4_NL/Q2_K)

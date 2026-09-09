@@ -17,6 +17,7 @@ void add_model_flags(ArgParser & p) {
     p.add("--threads-batch", "CPU threads for prompt processing (default: same as --threads)", "N");
     p.add("-ngl,--n-gpu-layers", "Layers to offload to the GPU (-1 = all when a GPU backend is available)", "N", "-1");
     p.add_repeatable("--device", "Backend device(s) to place layers on, in order (e.g. CUDA0, Vulkan0, CPU); repeatable", "NAME");
+    p.add("-ts,--tensor-split", "Fraction of the GPU layers per device, e.g. 3,1 (default: proportional to free memory)", "LIST", "");
     p.add("--no-mmap", "Read the model into memory instead of mmap-ing it");
     p.add("--mlock", "Lock model memory (prevent swapping)");
     p.add("--no-repack", "Do not repack CPU weights into ggml's optimised layouts (keeps weights mmap-shared, slower matmul)");
@@ -78,6 +79,15 @@ DeviceConfig device_config_from_args(const ArgParser & p) {
     if (p.has("threads-batch")) d.n_threads_batch = (int) p.get_int("threads-batch");
     if (p.has("n-gpu-layers")) d.n_gpu_layers = (int) p.get_int("n-gpu-layers");
     d.devices = p.get_all("device");
+    if (p.has("tensor-split")) {
+        const std::string v = p.get("tensor-split");
+        size_t i = 0;
+        while (i <= v.size() && !v.empty()) {
+            size_t j = v.find(',', i); if (j == std::string::npos) j = v.size();
+            if (j > i) d.tensor_split.push_back(std::stof(v.substr(i, j - i)));
+            i = j + 1;
+        }
+    }
     d.use_mmap = !p.get_bool("no-mmap");
     d.use_mlock = p.get_bool("mlock");
     d.use_extra_bufts = !p.get_bool("no-repack");
