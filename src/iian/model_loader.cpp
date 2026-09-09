@@ -390,8 +390,10 @@ std::unique_ptr<Model> ModelLoader::load(const std::string & path, const DeviceC
         if (sum <= 0.0f) { std::fill(share.begin(), share.end(), 1.0f); sum = (float) share.size(); }
         std::vector<float> cum(gpus.size(), 0.0f);
         for (size_t i = 0; i < gpus.size(); i++) cum[i] = (i ? cum[i - 1] : 0.0f) + share[i] / sum;
-        for (int il = first_gpu_layer; il < (int) hp.n_layer; il++) {
-            const float frac = (float) (il - first_gpu_layer + 0.5f) / (float) std::max(1, std::min(n_gpu_layers, (int) hp.n_layer));
+        const int first = std::max(0, first_gpu_layer);   // n_gpu_layers may count the output as one extra "layer"
+        const int n_split = std::max(1, (int) hp.n_layer - first);
+        for (int il = first; il < (int) hp.n_layer; il++) {
+            const float frac = ((float) (il - first) + 0.5f) / (float) n_split;
             size_t idx = 0;
             while (idx + 1 < gpus.size() && cum[idx] <= frac) idx++;
             m->dev_layer_[il] = gpus[idx];
