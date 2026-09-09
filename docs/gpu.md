@@ -22,7 +22,10 @@ pin the set and order, `-ts 3,1` to fix the shares, default shares proportional 
 keeps some layers on the CPU). The KV cache lives on each layer's device, so with a split every GPU holds the cache
 for its own layers; the auto size is the largest cell count for which every device stays within a quarter of its
 free memory (`--kv-cache-gb` / `--kv-cache-tokens` override it). The load log prints the split
-(`layer split: CUDA0: 10 layers (0-9), CUDA1: 20 layers (10-29); output on CUDA1`). Verified on the 2 x 5090 box:
+(`layer split: CUDA0: 10 layers (0-9), CUDA1: 20 layers (10-29); output on CUDA1`); the output head sits with the
+last offloaded layer. `IIAN_TENSOR_SPLIT=3,1` is the env form for tests. Verified on the 2 x 5090 box (auto, 1,1,
+3,1, 1,0 and 0,1 splits; `scripts/gpu-test.sh` runs the multi-GPU batching and draft-model tests whenever it sees
+two GPUs):
 outputs identical to the single-GPU run, all batching/speculation tests pass, ~950 tok/s single-stream (one
 device-to-device hop per step) and the same batched throughput as one GPU. Prompt processing does not yet pipeline
 micro-batches across the GPUs (ggml's scheduler supports it; planned).

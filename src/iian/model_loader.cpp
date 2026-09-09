@@ -400,7 +400,8 @@ std::unique_ptr<Model> ModelLoader::load(const std::string & path, const DeviceC
         }
     }
     m->dev_input_  = cpu;
-    m->dev_output_ = (n_gpu_layers > (int) hp.n_layer && !gpus.empty()) ? gpus.back() : cpu;
+    // the output (norm + lm_head) sits with the last offloaded layer, so a split like -ts 1,0 does not add a hop
+    m->dev_output_ = (n_gpu_layers > (int) hp.n_layer && !gpus.empty()) ? m->dev_layer_[hp.n_layer - 1] : cpu;
     if (gpus.size() > 1) {
         std::string placement;
         for (size_t i = 0; i < gpus.size(); i++) {

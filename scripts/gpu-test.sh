@@ -33,6 +33,13 @@ run "batching + draft"      sh -c "./build/tests/test-batching $M auto 0 models/
 run "batching, KV q8_0"     sh -c "./build/tests/test-batching $M auto 0 - q8_0 2>&1 | grep -E '$B'"
 run "generate, KV q4_0"     sh -c "./build/tests/test-generate $M 'The capital of France is' 32 --threads 8 --kv q4_0 2>&1 | grep -E 'TEXT|tok/s' | cut -c1-200"
 run "server e2e"            sh -c "python3 tests/server/test-server.py build/tools/iian/iian $M 2>&1 | grep -E 'FAIL|checks'"
+# multi-GPU: layer split across every visible GPU (auto share, plus a lopsided explicit split), same equivalence tests
+NGPU=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
+if [ "$NGPU" -ge 2 ]; then
+  ALL=$(nvidia-smi --query-gpu=index --format=csv,noheader | sed 's/^/CUDA/' | paste -sd,)
+  run "multi-GPU batching ($ALL)"   sh -c "IIAN_DEVICES=$ALL ./build/tests/test-batching $M 2>&1 | grep -E '$B'"
+  run "multi-GPU draft, split 3,1"  sh -c "IIAN_DEVICES=$ALL IIAN_TENSOR_SPLIT=3,1 ./build/tests/test-batching $M auto 0 models/SmolLM2-135M-Instruct-Q8_0.gguf 2>&1 | grep -E '$B'"
+fi
 run "bench"                 sh -c "./build/tests/bench-batch $M --concurrency 1,8,32,64 --prompt 256 --gen 128 --threads 8 2>&1 | grep -v '^\x1b\[90m'"
 if [ "$MODE" = full ]; then
   echo "== arch verification vs llama.cpp (CUDA)"
